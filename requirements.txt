@@ -2,3 +2,7 @@ streamlit
 requests
 pandas
 ultimate-sitemap-parser
+fastapi
+uvicorn[standard]
+aiohttp
+sqlite3
