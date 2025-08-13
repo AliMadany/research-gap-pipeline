@@ -35,6 +35,7 @@ class Article(BaseModel):
     created_at: Optional[str] = None
     word_count: Optional[int] = None
     generated: Optional[bool] = False
+    scheduled_date: Optional[str] = None
 
 class ResearchGap(BaseModel):
     id: Optional[str] = None
@@ -56,6 +57,9 @@ class WordPressAuthRequest(BaseModel):
 class GenerateArticleRequest(BaseModel):
     gap_topic: str
 
+class PublishRequest(BaseModel):
+    scheduled_date: Optional[str] = None  # ISO format datetime for scheduling
+
 # Global WordPress service instance
 wordpress_service: Optional[WordPressService] = None
 
@@ -74,9 +78,16 @@ def init_db():
             created_at TEXT,
             word_count INTEGER,
             generated BOOLEAN DEFAULT 0,
-            wordpress_post_id INTEGER NULL
+            wordpress_post_id INTEGER NULL,
+            scheduled_date TEXT NULL
         )
     ''')
+    
+    # Add scheduled_date column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute('ALTER TABLE articles ADD COLUMN scheduled_date TEXT NULL')
+    except:
+        pass  # Column already exists
     
     # Research gaps table
     cursor.execute('''
@@ -235,7 +246,8 @@ async def get_articles():
             status=row[3],
             created_at=row[4],
             word_count=row[5],
-            generated=bool(row[6])
+            generated=bool(row[6]),
+            scheduled_date=row[8] if len(row) > 8 else None
         ))
     
     return articles
@@ -279,17 +291,65 @@ async def update_article(article_id: str, article: Article):
 
 @app.delete("/articles/{article_id}")
 async def delete_article(article_id: str):
-    """Delete an article"""
+    """Delete an article from local database and WordPress (if published)"""
     conn = sqlite3.connect('research_gap_pipeline.db')
     cursor = conn.cursor()
+    
+    # Get article details first
+    cursor.execute('SELECT * FROM articles WHERE id = ?', (article_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Article not found")
+    
+    # Check if article was published to WordPress (has wordpress_post_id)
+    wordpress_post_id = row[7] if len(row) > 7 else None  # wordpress_post_id column
+    article_status = row[3]  # status column
+    
+    wordpress_deleted = False
+    wordpress_error = None
+    
+    # If article was published and we have WordPress connection, delete from WordPress too
+    if article_status == 'published' and wordpress_post_id and wordpress_service:
+        try:
+            import requests
+            wp_delete_url = f"{wordpress_service.site_url}/wp-json/wp/v2/posts/{wordpress_post_id}"
+            wp_response = requests.delete(wp_delete_url, headers=wordpress_service.headers)
+            
+            if wp_response.status_code == 200:
+                wordpress_deleted = True
+            else:
+                wordpress_error = f"Failed to delete from WordPress: {wp_response.status_code}"
+                
+        except Exception as e:
+            wordpress_error = f"Error deleting from WordPress: {str(e)}"
+    
+    # Delete from local database regardless of WordPress result
     cursor.execute('DELETE FROM articles WHERE id = ?', (article_id,))
     conn.commit()
     conn.close()
     
-    return {"success": True, "message": "Article deleted"}
+    # Prepare response message
+    if article_status == 'published' and wordpress_post_id:
+        if wordpress_deleted:
+            message = "Article deleted from both local database and WordPress"
+        elif wordpress_error:
+            message = f"Article deleted from local database. WordPress deletion failed: {wordpress_error}"
+        else:
+            message = "Article deleted from local database. WordPress not connected."
+    else:
+        message = "Article deleted from local database"
+    
+    return {
+        "success": True, 
+        "message": message,
+        "wordpress_deleted": wordpress_deleted,
+        "wordpress_error": wordpress_error
+    }
 
 @app.post("/articles/{article_id}/publish")
-async def publish_article(article_id: str):
+async def publish_article(article_id: str, publish_request: PublishRequest = PublishRequest()):
     """Publish article to WordPress"""
     if not wordpress_service:
         raise HTTPException(status_code=401, detail="WordPress not authenticated")
@@ -314,24 +374,38 @@ async def publish_article(article_id: str):
     )
     
     try:
-        # Publish to WordPress
-        wordpress_post = wordpress_service.publish_article_sync(article)
+        # Publish to WordPress (with optional scheduling)
+        wordpress_post = wordpress_service.publish_article_sync(article, publish_request.scheduled_date)
         
         if wordpress_post:
             # Update article status and WordPress post ID
-            cursor.execute('''
-                UPDATE articles 
-                SET status = 'published', wordpress_post_id = ?
-                WHERE id = ?
-            ''', (wordpress_post.get('id'), article_id))
+            if publish_request.scheduled_date:
+                # Set status to 'scheduled' for local tracking
+                cursor.execute('''
+                    UPDATE articles 
+                    SET status = 'scheduled', wordpress_post_id = ?, scheduled_date = ?
+                    WHERE id = ?
+                ''', (wordpress_post.get('id'), publish_request.scheduled_date, article_id))
+            else:
+                # Set status to 'published' for immediate publishing
+                cursor.execute('''
+                    UPDATE articles 
+                    SET status = 'published', wordpress_post_id = ?
+                    WHERE id = ?
+                ''', (wordpress_post.get('id'), article_id))
+                
             conn.commit()
             conn.close()
             
+            message = "Article scheduled for WordPress" if publish_request.scheduled_date else "Article published to WordPress"
+            
             return {
                 "success": True,
-                "message": "Article published to WordPress",
+                "message": message,
                 "wordpress_post_id": wordpress_post.get('id'),
-                "wordpress_url": wordpress_post.get('link')
+                "wordpress_url": wordpress_post.get('link'),
+                "scheduled": bool(publish_request.scheduled_date),
+                "scheduled_date": publish_request.scheduled_date
             }
         else:
             conn.close()
@@ -340,6 +414,57 @@ async def publish_article(article_id: str):
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=500, detail=f"Publishing error: {str(e)}")
+
+@app.post("/articles/check-scheduled")
+async def check_scheduled_articles():
+    """Check scheduled articles and update their status if they've been published by WordPress"""
+    if not wordpress_service:
+        return {"success": True, "message": "WordPress not connected", "updated": 0}
+    
+    try:
+        import requests
+        from datetime import datetime
+        
+        # Get all scheduled articles
+        conn = sqlite3.connect('research_gap_pipeline.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, wordpress_post_id, scheduled_date FROM articles WHERE status = "scheduled" AND wordpress_post_id IS NOT NULL')
+        scheduled_articles = cursor.fetchall()
+        
+        updated_count = 0
+        current_time = datetime.utcnow()
+        
+        for article_id, wp_post_id, scheduled_date in scheduled_articles:
+            try:
+                # Check the post status in WordPress
+                wp_url = f"{wordpress_service.site_url}/wp-json/wp/v2/posts/{wp_post_id}"
+                response = requests.get(wp_url, headers=wordpress_service.headers, timeout=10)
+                
+                if response.status_code == 200:
+                    post_data = response.json()
+                    wp_status = post_data.get('status')
+                    
+                    # If WordPress shows it as published, update our local status
+                    if wp_status == 'publish':
+                        cursor.execute('UPDATE articles SET status = "published" WHERE id = ?', (article_id,))
+                        updated_count += 1
+                        print(f"✅ Updated article {article_id} from scheduled to published")
+                
+            except Exception as e:
+                print(f"⚠️ Error checking article {article_id}: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": f"Checked scheduled articles. Updated {updated_count} to published status.",
+            "updated": updated_count
+        }
+        
+    except Exception as e:
+        return {"success": False, "message": f"Error checking scheduled articles: {str(e)}", "updated": 0}
 
 # Research Gap Analysis
 class AnalyzeRequest(BaseModel):
@@ -497,6 +622,7 @@ async def get_statistics():
         "total_articles": total_articles,
         "published_articles": status_counts.get("published", 0),
         "to_publish_articles": status_counts.get("to_publish", 0),
+        "scheduled_articles": status_counts.get("scheduled", 0),
         "total_research_gaps": total_gaps,
         "wordpress_authenticated": wordpress_service is not None
     }
@@ -570,7 +696,7 @@ async def get_posts_in_category(category_id: int, per_page: int = 5):
         raise HTTPException(status_code=500, detail=f"Error fetching posts: {str(e)}")
 
 @app.get("/wordpress/posts")
-async def get_wordpress_posts(per_page: int = 20, page: int = 1):
+async def get_wordpress_posts(per_page: int = 100, page: int = 1, fetch_all: bool = False):
     """Get all WordPress posts with their categories"""
     if not wordpress_service:
         raise HTTPException(status_code=401, detail="WordPress not authenticated")
@@ -578,20 +704,53 @@ async def get_wordpress_posts(per_page: int = 20, page: int = 1):
     try:
         import requests
         
-        # Get posts
-        posts_url = f"{wordpress_service.site_url}/wp-json/wp/v2/posts"
-        posts_params = {
-            'per_page': per_page,
-            'page': page,
-            'status': 'publish'
-        }
+        all_posts = []
         
-        posts_response = requests.get(posts_url, headers=wordpress_service.headers, params=posts_params)
-        
-        if posts_response.status_code != 200:
-            raise HTTPException(status_code=posts_response.status_code, detail="Failed to fetch posts")
-        
-        posts = posts_response.json()
+        if fetch_all:
+            # Fetch all posts by making multiple requests
+            current_page = 1
+            while True:
+                posts_url = f"{wordpress_service.site_url}/wp-json/wp/v2/posts"
+                posts_params = {
+                    'per_page': 100,  # WordPress REST API max
+                    'page': current_page,
+                    'status': 'publish',
+                    'orderby': 'date',
+                    'order': 'desc'  # Newest first
+                }
+                
+                posts_response = requests.get(posts_url, headers=wordpress_service.headers, params=posts_params)
+                
+                if posts_response.status_code != 200:
+                    break
+                
+                page_posts = posts_response.json()
+                if not page_posts:  # No more posts
+                    break
+                    
+                all_posts.extend(page_posts)
+                current_page += 1
+                
+                # Safety check to avoid infinite loop
+                if current_page > 50:  # Max 5000 posts
+                    break
+        else:
+            # Fetch single page
+            posts_url = f"{wordpress_service.site_url}/wp-json/wp/v2/posts"
+            posts_params = {
+                'per_page': per_page,
+                'page': page,
+                'status': 'publish',
+                'orderby': 'date',
+                'order': 'desc'  # Newest first
+            }
+            
+            posts_response = requests.get(posts_url, headers=wordpress_service.headers, params=posts_params)
+            
+            if posts_response.status_code != 200:
+                raise HTTPException(status_code=posts_response.status_code, detail="Failed to fetch posts")
+            
+            all_posts = posts_response.json()
         
         # Get all categories to map IDs to names
         categories_url = f"{wordpress_service.site_url}/wp-json/wp/v2/categories"
@@ -604,7 +763,7 @@ async def get_wordpress_posts(per_page: int = 20, page: int = 1):
         
         # Format posts with category names
         formatted_posts = []
-        for post in posts:
+        for post in all_posts:
             # Get category names for this post
             post_categories = []
             if post.get("categories"):
@@ -627,8 +786,9 @@ async def get_wordpress_posts(per_page: int = 20, page: int = 1):
         return {
             "posts": formatted_posts,
             "total_posts": len(formatted_posts),
-            "page": page,
-            "per_page": per_page
+            "page": page if not fetch_all else 1,
+            "per_page": per_page if not fetch_all else len(formatted_posts),
+            "fetched_all": fetch_all
         }
             
     except Exception as e:

@@ -13,6 +13,8 @@ import {
   Badge,
   Divider,
   Title,
+  Modal,
+  TextInput,
   rem
 } from '@mantine/core'
 import { 
@@ -22,10 +24,33 @@ import {
   IconChartBar,
   IconPlus,
   IconX,
-  IconSearch
+  IconSearch,
+  IconClock
 } from '@tabler/icons-react'
 import { apiService, type Article, type ResearchGap, type Stats, type WordPressPost } from './services/api'
 import { WordPressAuthModal, WordPressStatus } from './components/WordPressAuth'
+
+// Date formatting utilities
+const formatDate = (dateString: string) => {
+  const date = new Date(dateString)
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  })
+}
+
+const formatDateShort = (dateString: string) => {
+  const date = new Date(dateString)
+  return date.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  })
+}
 
 interface NavItem {
   icon: React.ComponentType<any>
@@ -79,6 +104,8 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [wordpressPosts, setWordpressPosts] = useState<WordPressPost[]>([])
   const [loadingWpPosts, setLoadingWpPosts] = useState(false)
+  const [schedulingArticle, setSchedulingArticle] = useState<Article | null>(null)
+  const [scheduledDate, setScheduledDate] = useState('')
 
   const navItems: NavItem[] = [
     { icon: IconDashboard, label: 'Overview', active: activeTab === 'overview' },
@@ -294,16 +321,20 @@ function App() {
     }
   }
 
-  const publishArticle = async (articleId: string) => {
+  const publishArticle = async (articleId: string, scheduleDate?: string) => {
     try {
       setLoading(true)
-      const result = await apiService.publishArticle(articleId)
+      const result = await apiService.publishArticle(articleId, scheduleDate)
       
       if (result.success) {
         // Update local state
         setArticles(articles.map(article => 
           article.id === articleId 
-            ? { ...article, status: 'published' as const }
+            ? { 
+                ...article, 
+                status: (result.scheduled ? 'scheduled' : 'published') as const,
+                scheduled_date: result.scheduled_date 
+              }
             : article
         ))
         
@@ -311,13 +342,39 @@ function App() {
         const updatedStats = await apiService.getStats()
         setStats(updatedStats)
         
-        console.log(`Article published: ${result.wordpress_url}`)
+        if (result.scheduled) {
+          alert(`✅ Article scheduled for ${formatDate(result.scheduled_date!)}`)
+        } else {
+          alert(`✅ Article published: ${result.wordpress_url}`)
+        }
+        
+        console.log(`Article ${result.scheduled ? 'scheduled' : 'published'}: ${result.wordpress_url}`)
       }
     } catch (error) {
       console.error('Failed to publish article:', error)
       alert('Failed to publish article. Please check your WordPress connection.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const openSchedulingModal = (article: Article) => {
+    setSchedulingArticle(article)
+    // Set default to 1 hour from now
+    const defaultDate = new Date()
+    defaultDate.setHours(defaultDate.getHours() + 1)
+    setScheduledDate(defaultDate.toISOString().slice(0, 16)) // Format for datetime-local input
+  }
+
+  const handleScheduledPublish = async () => {
+    if (!schedulingArticle || !scheduledDate) return
+    
+    try {
+      await publishArticle(schedulingArticle.id!, new Date(scheduledDate).toISOString())
+      setSchedulingArticle(null)
+      setScheduledDate('')
+    } catch (error) {
+      console.error('Failed to schedule article:', error)
     }
   }
 
@@ -382,7 +439,7 @@ function App() {
     
     setLoadingWpPosts(true)
     try {
-      const result = await apiService.getWordPressPosts(20, 1)
+      const result = await apiService.getWordPressPosts(100, 1, true) // Fetch all posts
       setWordpressPosts(result.posts)
     } catch (error) {
       console.error('Failed to load WordPress posts:', error)
@@ -394,25 +451,61 @@ function App() {
   const deleteArticle = async (articleId: string) => {
     try {
       setLoading(true)
-      await apiService.deleteArticle(articleId)
+      const result = await apiService.deleteArticle(articleId)
       
       // Update local state
       setArticles(articles.filter(article => article.id !== articleId))
+      
+      // Show feedback message
+      if (result.wordpress_deleted) {
+        alert('✅ Article deleted from both your dashboard and WordPress!')
+      } else if (result.wordpress_error) {
+        alert(`⚠️ Article deleted from your dashboard, but WordPress deletion failed: ${result.wordpress_error}`)
+      } else {
+        alert('✅ Article deleted from your dashboard')
+      }
       
       // Refresh stats
       const updatedStats = await apiService.getStats()
       setStats(updatedStats)
     } catch (error) {
       console.error('Failed to delete article:', error)
+      alert('❌ Failed to delete article. Please try again.')
     } finally {
       setLoading(false)
     }
   }
 
+  // Check for scheduled articles that have become published
+  const checkScheduledArticles = async () => {
+    try {
+      const result = await apiService.checkScheduledArticles()
+      if (result.updated > 0) {
+        // Refresh articles and stats if any were updated
+        const [articlesData, statsData] = await Promise.all([
+          apiService.getArticles(),
+          apiService.getStats()
+        ])
+        setArticles(articlesData)
+        setStats(statsData)
+        console.log(`✅ ${result.updated} scheduled articles became published`)
+      }
+    } catch (error) {
+      console.error('Failed to check scheduled articles:', error)
+    }
+  }
+
+  // Set up real-time checking for scheduled articles (every 30 seconds)
+  useEffect(() => {
+    const interval = setInterval(checkScheduledArticles, 30000) // Check every 30 seconds
+    return () => clearInterval(interval)
+  }, [])
+
   // Statistics calculations - use API stats when available
   const totalArticles = stats?.total_articles ?? articles.length
   const publishedArticles = stats?.published_articles ?? articles.filter(article => article.status === 'published').length
   const toPublishArticles = stats?.to_publish_articles ?? articles.filter(article => article.status === 'to_publish').length
+  const scheduledArticles = stats?.scheduled_articles ?? articles.filter(article => article.status === 'scheduled').length
   const totalResearchGaps = stats?.total_research_gaps ?? researchGaps.length
 
   return (
@@ -486,6 +579,7 @@ function App() {
               <StatsCard title="Total Articles" value={totalArticles} color="#51cf66" />
               <StatsCard title="Research Gaps" value={totalResearchGaps} color="#ff6b6b" />
               <StatsCard title="Published" value={publishedArticles} color="#51cf66" />
+              <StatsCard title="Scheduled" value={scheduledArticles} color="#339af0" />
               <StatsCard title="To Publish" value={toPublishArticles} color="#ffd43b" />
             </SimpleGrid>
 
@@ -659,21 +753,32 @@ function App() {
                   <div style={{ flex: 1 }}>
                     <Text size="sm" c="dimmed">
                       Status: {viewingArticle.status === 'published' ? '✅ Published' : '📝 To Publish'} | 
-                      Created: {viewingArticle.created_at}
+                      Created: {viewingArticle.created_at ? formatDate(viewingArticle.created_at) : 'Unknown'}
                     </Text>
                   </div>
                   {viewingArticle.status === 'to_publish' && (
-                    <Button 
-                      color="green"
-                      onClick={() => {
-                        publishArticle(viewingArticle.id!)
-                        setViewingArticle({...viewingArticle, status: 'published'})
-                      }}
-                      loading={loading}
-                      disabled={!wordpressAuthenticated}
-                    >
-                      Publish Article
-                    </Button>
+                    <Group>
+                      <Button 
+                        color="green"
+                        onClick={() => {
+                          publishArticle(viewingArticle.id!)
+                          setViewingArticle({...viewingArticle, status: 'published'})
+                        }}
+                        loading={loading}
+                        disabled={!wordpressAuthenticated}
+                      >
+                        Publish Now
+                      </Button>
+                      <Button 
+                        color="blue"
+                        variant="outline"
+                        leftSection={<IconClock size={16} />}
+                        onClick={() => openSchedulingModal(viewingArticle)}
+                        disabled={!wordpressAuthenticated}
+                      >
+                        Schedule
+                      </Button>
+                    </Group>
                   )}
                 </Group>
 
@@ -753,6 +858,48 @@ function App() {
               <div>
                 <Title order={2} mb="lg">Articles</Title>
                 
+                {/* Scheduled Section */}
+                <div style={{ marginBottom: '2rem' }}>
+                  <Title order={3} mb="md" style={{ color: '#339af0' }}>
+                    📅 Scheduled ({scheduledArticles})
+                  </Title>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {articles.filter(article => article.status === 'scheduled').map((article) => (
+                      <Card key={article.id} shadow="sm" padding="lg" radius="md" withBorder>
+                        <Group justify="space-between" align="flex-start">
+                          <div style={{ flex: 1 }}>
+                            <Text size="lg" fw={600} mb="xs" style={{ cursor: 'pointer' }} onClick={() => viewArticle(article)}>
+                              {article.title}
+                            </Text>
+                            
+                            <Text size="sm" c="dimmed" mb="sm">
+                              Created: {article.created_at ? formatDateShort(article.created_at) : 'Unknown'}
+                            </Text>
+
+                            <Text size="sm" c="blue" mb="sm">
+                              📅 Scheduled for: {article.scheduled_date ? formatDate(article.scheduled_date) : 'Unknown'}
+                            </Text>
+                            
+                            <Text size="sm" c="dimmed" lineClamp={2}>
+                              {article.content.substring(0, 150)}...
+                            </Text>
+                          </div>
+                          
+                          <Group>
+                            <Badge color="blue" variant="light">Scheduled</Badge>
+                          </Group>
+                        </Group>
+                      </Card>
+                    ))}
+                    {scheduledArticles === 0 && (
+                      <Card shadow="sm" padding="lg" radius="md" withBorder>
+                        <Text c="dimmed" size="sm" ta="center">No scheduled articles</Text>
+                      </Card>
+                    )}
+                  </div>
+                </div>
+
                 {/* To Publish Section */}
                 <div style={{ marginBottom: '2rem' }}>
                   <Title order={3} mb="md" style={{ color: '#ffd43b' }}>
@@ -768,7 +915,7 @@ function App() {
                               {article.title}
                             </Text>
                             <Text size="sm" c="dimmed" mb="sm">
-                              Created: {article.created_at}
+                              Created: {article.created_at ? formatDateShort(article.created_at) : 'Unknown'}
                             </Text>
                             <Text size="sm" c="dimmed" style={{ 
                               maxHeight: '60px', 
@@ -801,7 +948,20 @@ function App() {
                               loading={loading}
                               disabled={!wordpressAuthenticated}
                             >
-                              Publish
+                              Publish Now
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              color="blue"
+                              variant="outline"
+                              leftSection={<IconClock size={14} />}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openSchedulingModal(article)
+                              }}
+                              disabled={!wordpressAuthenticated}
+                            >
+                              Schedule
                             </Button>
                             <Button 
                               size="sm" 
@@ -809,7 +969,9 @@ function App() {
                               variant="outline"
                               onClick={(e) => {
                                 e.stopPropagation()
-                                if (article.id) deleteArticle(article.id)
+                                if (article.id && confirm(`Are you sure you want to delete "${article.title}"? This will remove it from BOTH your dashboard AND WordPress site.`)) {
+                                  deleteArticle(article.id)
+                                }
                               }}
                             >
                               Delete
@@ -844,7 +1006,7 @@ function App() {
                               {article.title}
                             </Text>
                             <Text size="sm" c="dimmed" mb="sm">
-                              Created: {article.created_at}
+                              Created: {article.created_at ? formatDateShort(article.created_at) : 'Unknown'}
                             </Text>
                             <Text size="sm" c="dimmed" style={{ 
                               maxHeight: '60px', 
@@ -873,7 +1035,9 @@ function App() {
                               variant="outline"
                               onClick={(e) => {
                                 e.stopPropagation()
-                                if (article.id) deleteArticle(article.id)
+                                if (article.id && confirm(`Are you sure you want to delete "${article.title}"? This will remove it from BOTH your dashboard AND WordPress site.`)) {
+                                  deleteArticle(article.id)
+                                }
                               }}
                             >
                               Delete
@@ -923,14 +1087,14 @@ function App() {
             </Grid>
 
             <Grid mt="xl">
-              <Grid.Col span={6}>
+              <Grid.Col span={4}>
                 <Card shadow="sm" padding="lg" radius="md" withBorder>
                   <Title order={4} mb="md">Published Articles ({publishedArticles})</Title>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' }}>
                     {articles.filter(article => article.status === 'published').map((article) => (
                       <Card key={article.id} padding="sm" withBorder>
                         <Text size="sm" fw={500}>{article.title}</Text>
-                        <Text size="xs" c="dimmed">{article.created_at}</Text>
+                        <Text size="xs" c="dimmed">{article.created_at ? formatDateShort(article.created_at) : 'Unknown'}</Text>
                       </Card>
                     ))}
                     {publishedArticles === 0 && (
@@ -940,7 +1104,29 @@ function App() {
                 </Card>
               </Grid.Col>
 
-              <Grid.Col span={6}>
+              <Grid.Col span={4}>
+                <Card shadow="sm" padding="lg" radius="md" withBorder>
+                  <Title order={4} mb="md">Scheduled ({scheduledArticles})</Title>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' }}>
+                    {articles.filter(article => article.status === 'scheduled').map((article) => (
+                      <Card key={article.id} padding="sm" withBorder>
+                        <Group justify="space-between">
+                          <div>
+                            <Text size="sm" fw={500}>{article.title}</Text>
+                            <Text size="xs" c="blue">📅 {article.scheduled_date ? formatDate(article.scheduled_date) : 'Unknown date'}</Text>
+                          </div>
+                          <Badge color="blue" size="sm">Scheduled</Badge>
+                        </Group>
+                      </Card>
+                    ))}
+                    {scheduledArticles === 0 && (
+                      <Text c="dimmed" size="sm">No scheduled articles</Text>
+                    )}
+                  </div>
+                </Card>
+              </Grid.Col>
+
+              <Grid.Col span={4}>
                 <Card shadow="sm" padding="lg" radius="md" withBorder>
                   <Title order={4} mb="md">To Publish ({toPublishArticles})</Title>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' }}>
@@ -949,16 +1135,27 @@ function App() {
                         <Group justify="space-between">
                           <div>
                             <Text size="sm" fw={500}>{article.title}</Text>
-                            <Text size="xs" c="dimmed">{article.created_at}</Text>
+                            <Text size="xs" c="dimmed">{article.created_at ? formatDateShort(article.created_at) : 'Unknown'}</Text>
                           </div>
-                          <Button 
-                            size="xs" 
-                            color="green"
-                            onClick={() => article.id && publishArticle(article.id)}
-                            disabled={!wordpressAuthenticated || !article.id}
-                          >
-                            Publish
-                          </Button>
+                          <Group gap="xs">
+                            <Button 
+                              size="xs" 
+                              color="green"
+                              onClick={() => article.id && publishArticle(article.id)}
+                              disabled={!wordpressAuthenticated || !article.id}
+                            >
+                              Publish
+                            </Button>
+                            <Button 
+                              size="xs" 
+                              color="blue"
+                              variant="outline"
+                              onClick={() => openSchedulingModal(article)}
+                              disabled={!wordpressAuthenticated}
+                            >
+                              📅
+                            </Button>
+                          </Group>
                         </Group>
                       </Card>
                     ))}
@@ -982,7 +1179,7 @@ function App() {
                 disabled={!wordpressAuthenticated}
                 color="blue"
               >
-                Refresh Posts
+                {loadingWpPosts ? 'Loading All Posts...' : 'Refresh Posts'}
               </Button>
             </Group>
             
@@ -1024,7 +1221,7 @@ function App() {
                             
                             <Group gap="md" mb="sm">
                               <Text size="sm" c="dimmed">
-                                📅 {new Date(post.date).toLocaleDateString()}
+                                📅 {formatDate(post.date)}
                               </Text>
                               <Text size="sm" c="dimmed">
                                 📝 {post.word_count} words
@@ -1077,6 +1274,55 @@ function App() {
           </div>
         )}
       </AppShell.Main>
+
+      {/* Scheduling Modal */}
+      <Modal
+        opened={!!schedulingArticle}
+        onClose={() => {
+          setSchedulingArticle(null)
+          setScheduledDate('')
+        }}
+        title="Schedule Article Publication"
+        size="md"
+      >
+        {schedulingArticle && (
+          <Stack gap="md">
+            <Text size="sm" c="dimmed">
+              Schedule "{schedulingArticle.title}" for publication
+            </Text>
+            
+            <TextInput
+              label="Publication Date & Time"
+              type="datetime-local"
+              value={scheduledDate}
+              onChange={(e) => setScheduledDate(e.target.value)}
+              description="Choose when to publish this article (uses your local timezone)"
+              required
+            />
+            
+            <Group justify="flex-end" mt="md">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setSchedulingArticle(null)
+                  setScheduledDate('')
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                color="blue"
+                leftSection={<IconClock size={16} />}
+                onClick={handleScheduledPublish}
+                disabled={!scheduledDate}
+                loading={loading}
+              >
+                Schedule Publication
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
 
       {/* WordPress Authentication Modal */}
       <WordPressAuthModal

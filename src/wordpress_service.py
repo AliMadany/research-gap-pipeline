@@ -66,18 +66,12 @@ class WordPressService:
     async def publish_article(self, article) -> Optional[Dict[str, Any]]:
         """Publish an article to WordPress"""
         try:
-            # Prepare post data
+            # Create as draft first to avoid scheduling issues
             post_data = {
                 'title': article.title,
                 'content': self._convert_markdown_to_html(article.content),
-                'status': 'publish',
-                'author': 1,  # Default to admin user
-                'date': datetime.now().isoformat(),
-                'excerpt': self._generate_excerpt(article.content),
-                'meta': {
-                    'generated_by': 'Research Gap Pipeline',
-                    'word_count': article.word_count or len(article.content.split())
-                }
+                'status': 'draft',
+                'excerpt': self._generate_excerpt(article.content)
             }
             
             # Set categories if available
@@ -85,20 +79,29 @@ class WordPressService:
             if categories:
                 post_data['categories'] = categories
             
-            # Set tags if available
-            tags = self._extract_tags(article.content)
-            if tags:
-                post_data['tags'] = tags
-            
             async with aiohttp.ClientSession() as session:
                 url = f"{self.site_url}/wp-json/wp/v2/posts"
                 
+                # Step 1: Create as draft
                 async with session.post(url, headers=self.headers, json=post_data) as response:
                     if response.status == 201:
-                        post_result = await response.json()
-                        print(f"✅ Article published successfully. Post ID: {post_result['id']}")
-                        print(f"📄 URL: {post_result['link']}")
-                        return post_result
+                        draft_result = await response.json()
+                        post_id = draft_result['id']
+                        print(f"📝 Article created as draft. Post ID: {post_id}")
+                        
+                        # Step 2: Immediately update to published
+                        update_url = f"{self.site_url}/wp-json/wp/v2/posts/{post_id}"
+                        update_data = {'status': 'publish'}
+                        
+                        async with session.post(update_url, headers=self.headers, json=update_data) as update_response:
+                            if update_response.status == 200:
+                                post_result = await update_response.json()
+                                print(f"✅ Article published successfully. Post ID: {post_result['id']}")
+                                print(f"📄 URL: {post_result['link']}")
+                                return post_result
+                            else:
+                                print(f"⚠️ Failed to publish draft: {update_response.status}")
+                                return draft_result  # Return draft if publish fails
                     else:
                         error_text = await response.text()
                         print(f"❌ Failed to publish article. Status: {response.status}")
@@ -109,38 +112,43 @@ class WordPressService:
             print(f"❌ Error publishing article: {str(e)}")
             return None
     
-    def publish_article_sync(self, article) -> Optional[Dict[str, Any]]:
+    def publish_article_sync(self, article, scheduled_date: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Synchronous version of publish_article"""
         try:
-            # Prepare post data
+            # Create post with proper status and scheduling
             post_data = {
                 'title': article.title,
                 'content': self._convert_markdown_to_html(article.content),
-                'status': 'publish',
-                'author': 1,
-                'date': datetime.now().isoformat(),
-                'excerpt': self._generate_excerpt(article.content),
-                'meta': {
-                    'generated_by': 'Research Gap Pipeline',
-                    'word_count': article.word_count or len(article.content.split())
-                }
+                'excerpt': self._generate_excerpt(article.content)
             }
             
-            # Set categories and tags
+            # Set categories
             categories = self._extract_categories(article.title, article.content)
             if categories:
                 post_data['categories'] = categories
             
-            tags = self._extract_tags(article.content)
-            if tags:
-                post_data['tags'] = tags
+            # Handle scheduling
+            if scheduled_date:
+                post_data['status'] = 'future'
+                post_data['date'] = scheduled_date
+                print(f"📅 Scheduling article for: {scheduled_date}")
+            else:
+                post_data['status'] = 'publish'
+                print(f"📝 Publishing article immediately")
             
+            # Create post with final status
             url = f"{self.site_url}/wp-json/wp/v2/posts"
             response = requests.post(url, headers=self.headers, json=post_data, timeout=30)
             
             if response.status_code == 201:
                 post_result = response.json()
-                print(f"✅ Article published successfully. Post ID: {post_result['id']}")
+                
+                if scheduled_date:
+                    print(f"📅 Article scheduled successfully. Post ID: {post_result['id']}")
+                    print(f"⏰ Will publish at: {scheduled_date}")
+                else:
+                    print(f"✅ Article published successfully. Post ID: {post_result['id']}")
+                
                 print(f"📄 URL: {post_result['link']}")
                 return post_result
             else:
@@ -203,19 +211,11 @@ class WordPressService:
         return excerpt
     
     def _extract_categories(self, title: str, content: str) -> list:
-        """Extract categories based on content analysis"""
+        """Extract category IDs - always include Paving blog category (ID: 17)"""
         categories = []
         
-        # Service-based categories
-        services = ['paving', 'roofing', 'landscaping', 'flooring', 'plumbing', 'electrical', 'construction']
-        for service in services:
-            if service in title.lower() or service in content.lower():
-                categories.append(service.title())
-        
-        # Location-based categories could be added here
-        # For now, return a default category
-        if not categories:
-            categories.append('Services')
+        # Always add Paving category (ID: 17) for blog posts
+        categories.append(17)
         
         return categories
     
@@ -223,18 +223,10 @@ class WordPressService:
         """Extract tags from content"""
         tags = []
         
-        # Common contractor tags
-        tag_keywords = [
-            'professional', 'quality', 'licensed', 'insured', 'local',
-            'installation', 'repair', 'maintenance', 'residential', 'commercial'
-        ]
+        # For now, return empty list to avoid tag ID issues
+        # Tags would need to be created or mapped to existing tag IDs
         
-        content_lower = content.lower()
-        for keyword in tag_keywords:
-            if keyword in content_lower:
-                tags.append(keyword.title())
-        
-        return tags[:10]  # Limit to 10 tags
+        return tags
     
     async def get_post_by_id(self, post_id: int) -> Optional[Dict[str, Any]]:
         """Get a WordPress post by ID"""
