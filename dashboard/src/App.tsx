@@ -15,20 +15,27 @@ import {
   Title,
   Modal,
   TextInput,
-  rem
+  rem,
+  Checkbox
 } from '@mantine/core'
 import { 
   IconDashboard, 
   IconFileText, 
   IconSettings, 
   IconChartBar,
-  IconPlus,
   IconX,
   IconSearch,
-  IconClock
+  IconClock,
+  IconPlus,
+  IconCalendarTime,
+  IconEdit,
+  IconCheck,
+  IconCalendar,
+  IconPencil,
+  IconExternalLink
 } from '@tabler/icons-react'
 import { apiService, type Article, type ResearchGap, type Stats, type WordPressPost } from './services/api'
-import { WordPressAuthModal, WordPressStatus } from './components/WordPressAuth'
+import { WordPressAuthModal, WordPressStatus, attemptAutoLogin } from './components/WordPressAuth'
 
 // Date formatting utilities
 const formatDate = (dateString: string) => {
@@ -106,6 +113,10 @@ function App() {
   const [loadingWpPosts, setLoadingWpPosts] = useState(false)
   const [schedulingArticle, setSchedulingArticle] = useState<Article | null>(null)
   const [scheduledDate, setScheduledDate] = useState('')
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false)
+  const [showMandatoryLogin, setShowMandatoryLogin] = useState(false)
+  const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set())
+  const [bulkMode, setBulkMode] = useState(false)
 
   const navItems: NavItem[] = [
     { icon: IconDashboard, label: 'Overview', active: activeTab === 'overview' },
@@ -118,11 +129,34 @@ function App() {
 
   // Load data on component mount
   useEffect(() => {
-    loadInitialData()
+    initializeApp()
   }, [])
 
-  const loadInitialData = async () => {
+  const initializeApp = async () => {
     setLoading(true)
+    try {
+      // Try auto-login first
+      console.log('Attempting auto-login...')
+      const autoLoginSuccess = await attemptAutoLogin()
+      
+      if (autoLoginSuccess) {
+        console.log('Auto-login successful')
+        setWordpressAuthenticated(true)
+        await loadInitialData()
+      } else {
+        console.log('Auto-login failed, requiring manual login')
+        setShowMandatoryLogin(true)
+      }
+    } catch (error) {
+      console.error('Failed to initialize app:', error)
+      setShowMandatoryLogin(true)
+    } finally {
+      setLoading(false)
+      setInitialLoadComplete(true)
+    }
+  }
+
+  const loadInitialData = async () => {
     try {
       // Load articles, research gaps, stats, and WordPress auth status
       const [articlesData, gapsData, statsData, authStatus] = await Promise.all([
@@ -138,8 +172,6 @@ function App() {
       setWordpressAuthenticated(authStatus.authenticated)
     } catch (error) {
       console.error('Failed to load initial data:', error)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -319,6 +351,137 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const regenerateArticleFromGap = async (gap: ResearchGap) => {
+    // Find existing article for this gap
+    const existingArticle = articles.find(article => 
+      article.title.toLowerCase().includes(gap.combination.toLowerCase()) ||
+      article.content.toLowerCase().includes(gap.combination.toLowerCase())
+    )
+
+    if (existingArticle && confirm(`Replace existing article "${existingArticle.title}"?`)) {
+      try {
+        setLoading(true)
+        // Delete the existing article first
+        await apiService.deleteArticle(existingArticle.id!)
+        
+        // Generate new article
+        const newArticle = await apiService.generateArticle(gap.combination)
+        
+        // Update local state
+        setArticles(prevArticles => 
+          prevArticles.filter(a => a.id !== existingArticle.id).concat(newArticle)
+        )
+        
+        // Refresh stats
+        const updatedStats = await apiService.getStats()
+        setStats(updatedStats)
+        
+        console.log(`Regenerated article: ${newArticle.title}`)
+      } catch (error) {
+        console.error('Failed to regenerate article:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  // Check if a research gap already has an article
+  const hasExistingArticle = (gap: ResearchGap): boolean => {
+    return articles.some(article => 
+      article.title.toLowerCase().includes(gap.combination.toLowerCase()) ||
+      article.content.toLowerCase().includes(gap.combination.toLowerCase())
+    )
+  }
+
+  // Generate articles for all research gaps
+  const generateAllArticles = async () => {
+    if (researchGaps.length === 0) {
+      alert('No research gaps found. Please run research analysis first.')
+      return
+    }
+
+    const gapsWithoutArticles = researchGaps.filter(gap => !hasExistingArticle(gap))
+    const gapsWithArticles = researchGaps.filter(gap => hasExistingArticle(gap))
+
+    let totalToGenerate = gapsWithoutArticles.length
+    
+    if (gapsWithArticles.length > 0) {
+      const regenerateExisting = confirm(
+        `Found ${gapsWithoutArticles.length} new gaps and ${gapsWithArticles.length} gaps that already have articles.\n\n` +
+        `Click OK to generate articles for new gaps only, or Cancel to regenerate ALL articles.`
+      )
+      
+      if (!regenerateExisting) {
+        totalToGenerate += gapsWithArticles.length
+      }
+    }
+
+    if (totalToGenerate === 0) {
+      alert('All research gaps already have articles.')
+      return
+    }
+
+    const confirmed = confirm(`Generate ${totalToGenerate} articles? This may take several minutes.`)
+    if (!confirmed) return
+
+    setLoading(true)
+    let successCount = 0
+    let errorCount = 0
+
+    // Generate for gaps without articles
+    for (const gap of gapsWithoutArticles) {
+      try {
+        const article = await apiService.generateArticle(gap.combination)
+        setArticles(prevArticles => [...prevArticles, article])
+        successCount++
+        console.log(`Generated: ${article.title}`)
+      } catch (error) {
+        console.error(`Failed to generate for ${gap.combination}:`, error)
+        errorCount++
+      }
+    }
+
+    // Regenerate for gaps with existing articles if user chose to do so
+    if (gapsWithArticles.length > 0) {
+      const regenerateExisting = !confirm(
+        `Generated ${successCount} new articles. Regenerate ${gapsWithArticles.length} existing articles?`
+      )
+      
+      if (!regenerateExisting) {
+        for (const gap of gapsWithArticles) {
+          try {
+            const existingArticle = articles.find(article => 
+              article.title.toLowerCase().includes(gap.combination.toLowerCase()) ||
+              article.content.toLowerCase().includes(gap.combination.toLowerCase())
+            )
+
+            if (existingArticle) {
+              // Delete existing and create new
+              await apiService.deleteArticle(existingArticle.id!)
+              const newArticle = await apiService.generateArticle(gap.combination)
+              
+              setArticles(prevArticles => 
+                prevArticles.filter(a => a.id !== existingArticle.id).concat(newArticle)
+              )
+              successCount++
+              console.log(`Regenerated: ${newArticle.title}`)
+            }
+          } catch (error) {
+            console.error(`Failed to regenerate for ${gap.combination}:`, error)
+            errorCount++
+          }
+        }
+      }
+    }
+
+    // Refresh stats
+    const updatedStats = await apiService.getStats()
+    setStats(updatedStats)
+
+    setLoading(false)
+    alert(`Batch generation complete!\n${successCount} articles generated successfully\n${errorCount} failed`)
   }
 
   const publishArticle = async (articleId: string, scheduleDate?: string) => {
@@ -508,6 +671,165 @@ function App() {
   const scheduledArticles = stats?.scheduled_articles ?? articles.filter(article => article.status === 'scheduled').length
   const totalResearchGaps = stats?.total_research_gaps ?? researchGaps.length
 
+  // Handle mandatory login completion
+  const handleMandatoryLoginSuccess = async () => {
+    setShowMandatoryLogin(false)
+    setWordpressAuthenticated(true)
+    await loadInitialData()
+  }
+
+  // Bulk operations
+  const toggleBulkMode = () => {
+    setBulkMode(!bulkMode)
+    setSelectedArticles(new Set())
+  }
+
+  const toggleArticleSelection = (articleId: string) => {
+    const newSelected = new Set(selectedArticles)
+    if (newSelected.has(articleId)) {
+      newSelected.delete(articleId)
+    } else {
+      newSelected.add(articleId)
+    }
+    setSelectedArticles(newSelected)
+  }
+
+  const selectAllArticles = (articles: Article[]) => {
+    const allIds = articles.map(a => a.id!).filter(Boolean)
+    setSelectedArticles(new Set(allIds))
+  }
+
+  const clearSelection = () => {
+    setSelectedArticles(new Set())
+  }
+
+  const bulkDeleteArticles = async () => {
+    if (selectedArticles.size === 0) return
+    
+    const confirmed = confirm(`Are you sure you want to delete ${selectedArticles.size} articles? This will remove them from BOTH your dashboard AND WordPress site.`)
+    if (!confirmed) return
+
+    setLoading(true)
+    let successCount = 0
+    let errorCount = 0
+
+    for (const articleId of selectedArticles) {
+      try {
+        await apiService.deleteArticle(articleId)
+        successCount++
+      } catch (error) {
+        console.error(`Failed to delete article ${articleId}:`, error)
+        errorCount++
+      }
+    }
+
+    // Update local state
+    setArticles(articles.filter(article => !selectedArticles.has(article.id!)))
+    
+    // Refresh stats
+    const updatedStats = await apiService.getStats()
+    setStats(updatedStats)
+
+    // Clear selection
+    setSelectedArticles(new Set())
+    setLoading(false)
+
+    alert(`Bulk delete complete: ${successCount} deleted successfully, ${errorCount} failed`)
+  }
+
+  const bulkPublishArticles = async () => {
+    if (selectedArticles.size === 0) return
+
+    const toPublishArticles = articles.filter(article => 
+      selectedArticles.has(article.id!) && article.status === 'to_publish'
+    )
+
+    if (toPublishArticles.length === 0) {
+      alert('No "To Publish" articles selected')
+      return
+    }
+
+    const confirmed = confirm(`Publish ${toPublishArticles.length} articles immediately?`)
+    if (!confirmed) return
+
+    setLoading(true)
+    let successCount = 0
+    let errorCount = 0
+
+    for (const article of toPublishArticles) {
+      try {
+        await apiService.publishArticle(article.id!)
+        successCount++
+      } catch (error) {
+        console.error(`Failed to publish article ${article.id}:`, error)
+        errorCount++
+      }
+    }
+
+    // Refresh data
+    await loadInitialData()
+    
+    // Clear selection
+    setSelectedArticles(new Set())
+    setLoading(false)
+
+    alert(`Bulk publish complete: ${successCount} published successfully, ${errorCount} failed`)
+  }
+
+  const bulkScheduleArticles = async (scheduleDate: string) => {
+    if (selectedArticles.size === 0) return
+
+    const toPublishArticles = articles.filter(article => 
+      selectedArticles.has(article.id!) && article.status === 'to_publish'
+    )
+
+    if (toPublishArticles.length === 0) {
+      alert('No "To Publish" articles selected')
+      return
+    }
+
+    setLoading(true)
+    let successCount = 0
+    let errorCount = 0
+
+    for (const article of toPublishArticles) {
+      try {
+        await apiService.publishArticle(article.id!, scheduleDate)
+        successCount++
+      } catch (error) {
+        console.error(`Failed to schedule article ${article.id}:`, error)
+        errorCount++
+      }
+    }
+
+    // Refresh data
+    await loadInitialData()
+    
+    // Clear selection
+    setSelectedArticles(new Set())
+    setLoading(false)
+
+    alert(`Bulk schedule complete: ${successCount} scheduled successfully, ${errorCount} failed`)
+  }
+
+  // Show loading screen until initial authentication is complete
+  if (!initialLoadComplete) {
+    return (
+      <div style={{ 
+        height: '100vh', 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center',
+        backgroundColor: '#f8f9fa'
+      }}>
+        <Stack gap="md" align="center">
+          <Text size="lg" fw={600}>Content Generator Manager</Text>
+          <Text size="sm" c="dimmed">Initializing...</Text>
+        </Stack>
+      </div>
+    )
+  }
+
   return (
     <AppShell
       navbar={{
@@ -568,11 +890,8 @@ function App() {
             <Group justify="space-between" mb="xl">
               <div>
                 <Title order={2} mb="xs">Dashboard</Title>
-                <Text c="dimmed">Welcome, Let's dive into your personalized setup guide.</Text>
+                <Text c="dimmed">Welcome to your content management dashboard.</Text>
               </div>
-              <Button leftSection={<IconPlus size={16} />} color="green">
-                Create campaign
-              </Button>
             </Group>
 
             <SimpleGrid cols={{ base: 2, md: 4 }} mb="xl">
@@ -715,7 +1034,19 @@ function App() {
 
             {researchGaps.length > 0 && (
               <div style={{ marginTop: '2rem' }}>
-                <Title order={4} mb="md">Found Research Gaps ({researchGaps.length})</Title>
+                <Group justify="space-between" align="center" mb="md">
+                  <Title order={4}>Found Research Gaps ({researchGaps.length})</Title>
+                  <Button
+                    size="sm"
+                    color="green"
+                    variant="filled"
+                    onClick={generateAllArticles}
+                    loading={loading}
+                    leftSection={<IconPlus size={16} />}
+                  >
+                    Generate All Articles
+                  </Button>
+                </Group>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {researchGaps.slice(-5).map((gap) => (
                     <Card key={gap.id} shadow="sm" padding="md" radius="md" withBorder>
@@ -726,11 +1057,11 @@ function App() {
                         </div>
                         <Button
                           size="sm"
-                          color="green"
-                          onClick={() => createArticleFromGap(gap)}
+                          color={hasExistingArticle(gap) ? "orange" : "green"}
+                          onClick={() => hasExistingArticle(gap) ? regenerateArticleFromGap(gap) : createArticleFromGap(gap)}
                           loading={loading}
                         >
-                          Create Article
+                          {hasExistingArticle(gap) ? 'Regenerate Article' : 'Create Article'}
                         </Button>
                       </Group>
                     </Card>
@@ -856,18 +1187,98 @@ function App() {
             ) : (
               // Articles list view with sections
               <div>
-                <Title order={2} mb="lg">Articles</Title>
+                <Group justify="space-between" mb="lg">
+                  <Title order={2}>Articles</Title>
+                  <Group>
+                    <Button
+                      variant={bulkMode ? "filled" : "outline"}
+                      color="blue"
+                      onClick={toggleBulkMode}
+                      size="sm"
+                    >
+                      {bulkMode ? 'Exit Bulk Mode' : 'Select'}
+                    </Button>
+                    
+                    {bulkMode && (
+                      <>
+                        <Text size="sm" c="dimmed">
+                          {selectedArticles.size} selected
+                        </Text>
+                        {selectedArticles.size > 0 && (
+                          <Group gap="xs">
+                            <Button size="xs" variant="outline" onClick={clearSelection}>
+                              Clear All
+                            </Button>
+                            <Button 
+                              size="xs" 
+                              color="red" 
+                              onClick={bulkDeleteArticles}
+                              loading={loading}
+                            >
+                              Delete Selected
+                            </Button>
+                            <Button 
+                              size="xs" 
+                              color="green"
+                              onClick={bulkPublishArticles}
+                              loading={loading}
+                              disabled={!wordpressAuthenticated}
+                            >
+                              Publish Selected
+                            </Button>
+                            <Button 
+                              size="xs" 
+                              color="blue"
+                              variant="outline"
+                              onClick={() => {
+                                const defaultDate = new Date()
+                                defaultDate.setHours(defaultDate.getHours() + 1)
+                                const scheduleDate = prompt('Schedule for (YYYY-MM-DDTHH:mm format):', defaultDate.toISOString().slice(0, 16))
+                                if (scheduleDate) {
+                                  bulkScheduleArticles(new Date(scheduleDate).toISOString())
+                                }
+                              }}
+                              disabled={!wordpressAuthenticated}
+                            >
+                              Schedule Selected
+                            </Button>
+                          </Group>
+                        )}
+                      </>
+                    )}
+                  </Group>
+                </Group>
                 
                 {/* Scheduled Section */}
                 <div style={{ marginBottom: '2rem' }}>
-                  <Title order={3} mb="md" style={{ color: '#339af0' }}>
-                    📅 Scheduled ({scheduledArticles})
-                  </Title>
+                  <Group justify="space-between" align="center" mb="md">
+                    <Group gap="sm">
+                      <IconCalendarTime size={20} color="#339af0" />
+                      <Title order={3} style={{ color: '#339af0' }}>
+                        Scheduled ({scheduledArticles})
+                      </Title>
+                    </Group>
+                    {bulkMode && scheduledArticles > 0 && (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => selectAllArticles(articles.filter(a => a.status === 'scheduled'))}
+                      >
+                        Select All Scheduled
+                      </Button>
+                    )}
+                  </Group>
                   
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {articles.filter(article => article.status === 'scheduled').map((article) => (
                       <Card key={article.id} shadow="sm" padding="lg" radius="md" withBorder>
                         <Group justify="space-between" align="flex-start">
+                          {bulkMode && (
+                            <Checkbox
+                              checked={selectedArticles.has(article.id!)}
+                              onChange={() => toggleArticleSelection(article.id!)}
+                            />
+                          )}
                           <div style={{ flex: 1 }}>
                             <Text size="lg" fw={600} mb="xs" style={{ cursor: 'pointer' }} onClick={() => viewArticle(article)}>
                               {article.title}
@@ -877,9 +1288,12 @@ function App() {
                               Created: {article.created_at ? formatDateShort(article.created_at) : 'Unknown'}
                             </Text>
 
-                            <Text size="sm" c="blue" mb="sm">
-                              📅 Scheduled for: {article.scheduled_date ? formatDate(article.scheduled_date) : 'Unknown'}
-                            </Text>
+                            <Group gap="xs" mb="sm">
+                              <IconCalendarTime size={14} color="#339af0" />
+                              <Text size="sm" c="blue">
+                                Scheduled for: {article.scheduled_date ? formatDate(article.scheduled_date) : 'Unknown'}
+                              </Text>
+                            </Group>
                             
                             <Text size="sm" c="dimmed" lineClamp={2}>
                               {article.content.substring(0, 150)}...
@@ -902,14 +1316,34 @@ function App() {
 
                 {/* To Publish Section */}
                 <div style={{ marginBottom: '2rem' }}>
-                  <Title order={3} mb="md" style={{ color: '#ffd43b' }}>
-                    📝 To Publish ({toPublishArticles})
-                  </Title>
+                  <Group justify="space-between" align="center" mb="md">
+                    <Group gap="sm">
+                      <IconEdit size={20} color="#ffd43b" />
+                      <Title order={3} style={{ color: '#ffd43b' }}>
+                        To Publish ({toPublishArticles})
+                      </Title>
+                    </Group>
+                    {bulkMode && toPublishArticles > 0 && (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => selectAllArticles(articles.filter(a => a.status === 'to_publish'))}
+                      >
+                        Select All To Publish
+                      </Button>
+                    )}
+                  </Group>
                   
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {articles.filter(article => article.status === 'to_publish').map((article) => (
                       <Card key={article.id} shadow="sm" padding="lg" radius="md" withBorder>
                         <Group justify="space-between" align="flex-start">
+                          {bulkMode && (
+                            <Checkbox
+                              checked={selectedArticles.has(article.id!)}
+                              onChange={() => toggleArticleSelection(article.id!)}
+                            />
+                          )}
                           <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => viewArticle(article)}>
                             <Text fw={600} size="lg" mb="xs" style={{ color: '#51cf66' }}>
                               {article.title}
@@ -993,14 +1427,34 @@ function App() {
 
                 {/* Published Section */}
                 <div>
-                  <Title order={3} mb="md" style={{ color: '#51cf66' }}>
-                    ✅ Published ({publishedArticles})
-                  </Title>
+                  <Group justify="space-between" align="center" mb="md">
+                    <Group gap="sm">
+                      <IconCheck size={20} color="#51cf66" />
+                      <Title order={3} style={{ color: '#51cf66' }}>
+                        Published ({publishedArticles})
+                      </Title>
+                    </Group>
+                    {bulkMode && publishedArticles > 0 && (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => selectAllArticles(articles.filter(a => a.status === 'published'))}
+                      >
+                        Select All Published
+                      </Button>
+                    )}
+                  </Group>
                   
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {articles.filter(article => article.status === 'published').map((article) => (
                       <Card key={article.id} shadow="sm" padding="lg" radius="md" withBorder>
                         <Group justify="space-between" align="flex-start">
+                          {bulkMode && (
+                            <Checkbox
+                              checked={selectedArticles.has(article.id!)}
+                              onChange={() => toggleArticleSelection(article.id!)}
+                            />
+                          )}
                           <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => viewArticle(article)}>
                             <Text fw={600} size="lg" mb="xs" style={{ color: '#51cf66' }}>
                               {article.title}
@@ -1113,7 +1567,10 @@ function App() {
                         <Group justify="space-between">
                           <div>
                             <Text size="sm" fw={500}>{article.title}</Text>
-                            <Text size="xs" c="blue">📅 {article.scheduled_date ? formatDate(article.scheduled_date) : 'Unknown date'}</Text>
+                            <Group gap="xs">
+                              <IconCalendarTime size={12} color="#339af0" />
+                              <Text size="xs" c="blue">{article.scheduled_date ? formatDate(article.scheduled_date) : 'Unknown date'}</Text>
+                            </Group>
                           </div>
                           <Badge color="blue" size="sm">Scheduled</Badge>
                         </Group>
@@ -1152,8 +1609,9 @@ function App() {
                               variant="outline"
                               onClick={() => openSchedulingModal(article)}
                               disabled={!wordpressAuthenticated}
+                              leftSection={<IconCalendarTime size={12} />}
                             >
-                              📅
+                              Schedule
                             </Button>
                           </Group>
                         </Group>
@@ -1220,17 +1678,26 @@ function App() {
                             </Group>
                             
                             <Group gap="md" mb="sm">
-                              <Text size="sm" c="dimmed">
-                                📅 {formatDate(post.date)}
-                              </Text>
-                              <Text size="sm" c="dimmed">
-                                📝 {post.word_count} words
-                              </Text>
-                              <Text size="sm" c="dimmed">
-                                🔗 <a href={post.link} target="_blank" rel="noopener noreferrer" style={{color: '#51cf66'}}>
-                                  View Post
-                                </a>
-                              </Text>
+                              <Group gap="xs">
+                                <IconCalendar size={14} color="#868e96" />
+                                <Text size="sm" c="dimmed">
+                                  {formatDate(post.date)}
+                                </Text>
+                              </Group>
+                              <Group gap="xs">
+                                <IconPencil size={14} color="#868e96" />
+                                <Text size="sm" c="dimmed">
+                                  {post.word_count} words
+                                </Text>
+                              </Group>
+                              <Group gap="xs">
+                                <IconExternalLink size={14} color="#51cf66" />
+                                <Text size="sm" c="dimmed">
+                                  <a href={post.link} target="_blank" rel="noopener noreferrer" style={{color: '#51cf66', textDecoration: 'none'}}>
+                                    View Post
+                                  </a>
+                                </Text>
+                              </Group>
                             </Group>
                             
                             <Text size="sm" c="dimmed" style={{ 
@@ -1335,6 +1802,14 @@ function App() {
             apiService.getStats().then(setStats)
           }
         }}
+      />
+
+      {/* Mandatory Login Modal */}
+      <WordPressAuthModal
+        opened={showMandatoryLogin}
+        onClose={() => {}}
+        onAuthenticated={handleMandatoryLoginSuccess}
+        mandatory={true}
       />
     </AppShell>
   )
