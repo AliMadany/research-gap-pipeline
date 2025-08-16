@@ -108,9 +108,13 @@ function App() {
   const [editContent, setEditContent] = useState<string>('')
   const [wordpressAuthModalOpen, setWordpressAuthModalOpen] = useState(false)
   const [wordpressAuthenticated, setWordpressAuthenticated] = useState(false)
-  const [loading, setLoading] = useState(false)
   const [wordpressPosts, setWordpressPosts] = useState<WordPressPost[]>([])
   const [loadingWpPosts, setLoadingWpPosts] = useState(false)
+  const [generatingArticles, setGeneratingArticles] = useState<Set<string>>(new Set())
+  const [publishingArticles, setPublishingArticles] = useState<Set<string>>(new Set())
+  const [deletingArticles, setDeletingArticles] = useState<Set<string>>(new Set())
+  const [editingInProgress, setEditingInProgress] = useState(false)
+  const [bulkOperationInProgress, setBulkOperationInProgress] = useState(false)
   const [schedulingArticle, setSchedulingArticle] = useState<Article | null>(null)
   const [scheduledDate, setScheduledDate] = useState('')
   const [initialLoadComplete, setInitialLoadComplete] = useState(false)
@@ -133,7 +137,6 @@ function App() {
   }, [])
 
   const initializeApp = async () => {
-    setLoading(true)
     try {
       // Try auto-login first
       console.log('Attempting auto-login...')
@@ -151,7 +154,6 @@ function App() {
       console.error('Failed to initialize app:', error)
       setShowMandatoryLogin(true)
     } finally {
-      setLoading(false)
       setInitialLoadComplete(true)
     }
   }
@@ -335,7 +337,7 @@ function App() {
 
   const createArticleFromGap = async (gap: ResearchGap) => {
     try {
-      setLoading(true)
+      setGeneratingArticles(prev => new Set([...prev, gap.id!]))
       const article = await apiService.generateArticle(gap.combination)
       
       // Add to local state
@@ -349,7 +351,11 @@ function App() {
     } catch (error) {
       console.error('Failed to generate article:', error)
     } finally {
-      setLoading(false)
+      setGeneratingArticles(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(gap.id!)
+        return newSet
+      })
     }
   }
 
@@ -362,7 +368,7 @@ function App() {
 
     if (existingArticle && confirm(`Replace existing article "${existingArticle.title}"?`)) {
       try {
-        setLoading(true)
+        setGeneratingArticles(prev => new Set([...prev, gap.id!]))
         // Delete the existing article first
         await apiService.deleteArticle(existingArticle.id!)
         
@@ -382,7 +388,11 @@ function App() {
       } catch (error) {
         console.error('Failed to regenerate article:', error)
       } finally {
-        setLoading(false)
+        setGeneratingArticles(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(gap.id!)
+          return newSet
+        })
       }
     }
   }
@@ -426,7 +436,7 @@ function App() {
     const confirmed = confirm(`Generate ${totalToGenerate} articles? This may take several minutes.`)
     if (!confirmed) return
 
-    setLoading(true)
+    setBulkOperationInProgress(true)
     let successCount = 0
     let errorCount = 0
 
@@ -480,13 +490,13 @@ function App() {
     const updatedStats = await apiService.getStats()
     setStats(updatedStats)
 
-    setLoading(false)
+    setBulkOperationInProgress(false)
     alert(`Batch generation complete!\n${successCount} articles generated successfully\n${errorCount} failed`)
   }
 
   const publishArticle = async (articleId: string, scheduleDate?: string) => {
     try {
-      setLoading(true)
+      setPublishingArticles(prev => new Set([...prev, articleId]))
       const result = await apiService.publishArticle(articleId, scheduleDate)
       
       if (result.success) {
@@ -517,7 +527,11 @@ function App() {
       console.error('Failed to publish article:', error)
       alert('Failed to publish article. Please check your WordPress connection.')
     } finally {
-      setLoading(false)
+      setPublishingArticles(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(articleId)
+        return newSet
+      })
     }
   }
 
@@ -555,7 +569,7 @@ function App() {
     if (!editingArticle) return
     
     try {
-      setLoading(true)
+      setEditingInProgress(true)
       const updatedArticle = {
         ...editingArticle,
         title: editTitle,
@@ -577,7 +591,7 @@ function App() {
     } catch (error) {
       console.error('Failed to save article:', error)
     } finally {
-      setLoading(false)
+      setEditingInProgress(false)
     }
   }
 
@@ -613,7 +627,7 @@ function App() {
 
   const deleteArticle = async (articleId: string) => {
     try {
-      setLoading(true)
+      setDeletingArticles(prev => new Set([...prev, articleId]))
       const result = await apiService.deleteArticle(articleId)
       
       // Update local state
@@ -635,7 +649,11 @@ function App() {
       console.error('Failed to delete article:', error)
       alert('❌ Failed to delete article. Please try again.')
     } finally {
-      setLoading(false)
+      setDeletingArticles(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(articleId)
+        return newSet
+      })
     }
   }
 
@@ -709,7 +727,7 @@ function App() {
     const confirmed = confirm(`Are you sure you want to delete ${selectedArticles.size} articles? This will remove them from BOTH your dashboard AND WordPress site.`)
     if (!confirmed) return
 
-    setLoading(true)
+    setBulkOperationInProgress(true)
     let successCount = 0
     let errorCount = 0
 
@@ -732,7 +750,7 @@ function App() {
 
     // Clear selection
     setSelectedArticles(new Set())
-    setLoading(false)
+    setBulkOperationInProgress(false)
 
     alert(`Bulk delete complete: ${successCount} deleted successfully, ${errorCount} failed`)
   }
@@ -752,7 +770,7 @@ function App() {
     const confirmed = confirm(`Publish ${toPublishArticles.length} articles immediately?`)
     if (!confirmed) return
 
-    setLoading(true)
+    setBulkOperationInProgress(true)
     let successCount = 0
     let errorCount = 0
 
@@ -771,7 +789,7 @@ function App() {
     
     // Clear selection
     setSelectedArticles(new Set())
-    setLoading(false)
+    setBulkOperationInProgress(false)
 
     alert(`Bulk publish complete: ${successCount} published successfully, ${errorCount} failed`)
   }
@@ -788,7 +806,7 @@ function App() {
       return
     }
 
-    setLoading(true)
+    setBulkOperationInProgress(true)
     let successCount = 0
     let errorCount = 0
 
@@ -807,7 +825,7 @@ function App() {
     
     // Clear selection
     setSelectedArticles(new Set())
-    setLoading(false)
+    setBulkOperationInProgress(false)
 
     alert(`Bulk schedule complete: ${successCount} scheduled successfully, ${errorCount} failed`)
   }
@@ -1041,7 +1059,7 @@ function App() {
                     color="green"
                     variant="filled"
                     onClick={generateAllArticles}
-                    loading={loading}
+                    loading={bulkOperationInProgress}
                     leftSection={<IconPlus size={16} />}
                   >
                     Generate All Articles
@@ -1059,7 +1077,7 @@ function App() {
                           size="sm"
                           color={hasExistingArticle(gap) ? "orange" : "green"}
                           onClick={() => hasExistingArticle(gap) ? regenerateArticleFromGap(gap) : createArticleFromGap(gap)}
-                          loading={loading}
+                          loading={generatingArticles.has(gap.id!)}
                         >
                           {hasExistingArticle(gap) ? 'Regenerate Article' : 'Create Article'}
                         </Button>
@@ -1095,7 +1113,7 @@ function App() {
                           publishArticle(viewingArticle.id!)
                           setViewingArticle({...viewingArticle, status: 'published'})
                         }}
-                        loading={loading}
+                        loading={publishingArticles.has(viewingArticle.id!)}
                         disabled={!wordpressAuthenticated}
                       >
                         Publish Now
@@ -1176,10 +1194,10 @@ function App() {
                 </div>
 
                 <Group>
-                  <Button onClick={saveArticleChanges} color="green">
+                  <Button onClick={saveArticleChanges} color="green" loading={editingInProgress}>
                     Save Changes
                   </Button>
-                  <Button onClick={cancelEditing} variant="outline">
+                  <Button onClick={cancelEditing} variant="outline" disabled={editingInProgress}>
                     Cancel
                   </Button>
                 </Group>
@@ -1213,7 +1231,7 @@ function App() {
                               size="xs" 
                               color="red" 
                               onClick={bulkDeleteArticles}
-                              loading={loading}
+                              loading={bulkOperationInProgress}
                             >
                               Delete Selected
                             </Button>
@@ -1221,7 +1239,7 @@ function App() {
                               size="xs" 
                               color="green"
                               onClick={bulkPublishArticles}
-                              loading={loading}
+                              loading={bulkOperationInProgress}
                               disabled={!wordpressAuthenticated}
                             >
                               Publish Selected
@@ -1280,7 +1298,13 @@ function App() {
                             />
                           )}
                           <div style={{ flex: 1 }}>
-                            <Text size="lg" fw={600} mb="xs" style={{ cursor: 'pointer' }} onClick={() => viewArticle(article)}>
+                            <Text 
+                              size="lg" 
+                              fw={600} 
+                              mb="xs" 
+                              style={{ cursor: 'pointer' }} 
+                              onClick={() => bulkMode ? toggleArticleSelection(article.id!) : viewArticle(article)}
+                            >
                               {article.title}
                             </Text>
                             
@@ -1344,7 +1368,10 @@ function App() {
                               onChange={() => toggleArticleSelection(article.id!)}
                             />
                           )}
-                          <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => viewArticle(article)}>
+                          <div 
+                            style={{ flex: 1, cursor: 'pointer' }} 
+                            onClick={() => bulkMode ? toggleArticleSelection(article.id!) : viewArticle(article)}
+                          >
                             <Text fw={600} size="lg" mb="xs" style={{ color: '#51cf66' }}>
                               {article.title}
                             </Text>
@@ -1379,7 +1406,7 @@ function App() {
                                 e.stopPropagation()
                                 publishArticle(article.id!)
                               }}
-                              loading={loading}
+                              loading={publishingArticles.has(article.id!)}
                               disabled={!wordpressAuthenticated}
                             >
                               Publish Now
@@ -1407,6 +1434,7 @@ function App() {
                                   deleteArticle(article.id)
                                 }
                               }}
+                              loading={deletingArticles.has(article.id!)}
                             >
                               Delete
                             </Button>
@@ -1455,7 +1483,10 @@ function App() {
                               onChange={() => toggleArticleSelection(article.id!)}
                             />
                           )}
-                          <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => viewArticle(article)}>
+                          <div 
+                            style={{ flex: 1, cursor: 'pointer' }} 
+                            onClick={() => bulkMode ? toggleArticleSelection(article.id!) : viewArticle(article)}
+                          >
                             <Text fw={600} size="lg" mb="xs" style={{ color: '#51cf66' }}>
                               {article.title}
                             </Text>
@@ -1493,6 +1524,7 @@ function App() {
                                   deleteArticle(article.id)
                                 }
                               }}
+                              loading={deletingArticles.has(article.id!)}
                             >
                               Delete
                             </Button>
@@ -1600,6 +1632,7 @@ function App() {
                               color="green"
                               onClick={() => article.id && publishArticle(article.id)}
                               disabled={!wordpressAuthenticated || !article.id}
+                              loading={article.id ? publishingArticles.has(article.id) : false}
                             >
                               Publish
                             </Button>
@@ -1782,7 +1815,7 @@ function App() {
                 leftSection={<IconClock size={16} />}
                 onClick={handleScheduledPublish}
                 disabled={!scheduledDate}
-                loading={loading}
+                loading={schedulingArticle ? publishingArticles.has(schedulingArticle.id!) : false}
               >
                 Schedule Publication
               </Button>
