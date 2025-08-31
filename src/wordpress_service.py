@@ -63,7 +63,7 @@ class WordPressService:
             print(f"❌ WordPress connection error: {str(e)}")
             return False
     
-    async def publish_article(self, article) -> Optional[Dict[str, Any]]:
+    async def publish_article(self, article, featured_image_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Publish an article to WordPress"""
         try:
             # Create as draft first to avoid scheduling issues
@@ -78,6 +78,11 @@ class WordPressService:
             categories = self._extract_categories(article.title, article.content)
             if categories:
                 post_data['categories'] = categories
+            
+            # Set featured image if provided
+            if featured_image_id:
+                post_data['featured_media'] = featured_image_id
+                print(f"🖼️  Setting featured image ID: {featured_image_id}")
             
             async with aiohttp.ClientSession() as session:
                 url = f"{self.site_url}/wp-json/wp/v2/posts"
@@ -112,7 +117,7 @@ class WordPressService:
             print(f"❌ Error publishing article: {str(e)}")
             return None
     
-    def publish_article_sync(self, article, scheduled_date: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def publish_article_sync(self, article, scheduled_date: Optional[str] = None, featured_image_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Synchronous version of publish_article"""
         try:
             # Create post with proper status and scheduling
@@ -126,6 +131,11 @@ class WordPressService:
             categories = self._extract_categories(article.title, article.content)
             if categories:
                 post_data['categories'] = categories
+            
+            # Set featured image if provided
+            if featured_image_id:
+                post_data['featured_media'] = featured_image_id
+                print(f"🖼️  Setting featured image ID: {featured_image_id}")
             
             # Handle scheduling
             if scheduled_date:
@@ -292,4 +302,100 @@ class WordPressService:
                 
         except Exception as e:
             print(f"Error getting site info: {str(e)}")
+            return None
+    
+    def get_media_images(self, per_page: int = 50, page: int = 1) -> Optional[Dict[str, Any]]:
+        """Get uploaded media images from WordPress"""
+        try:
+            url = f"{self.site_url}/wp-json/wp/v2/media"
+            params = {
+                'media_type': 'image',
+                'per_page': per_page,
+                'page': page,
+                'orderby': 'date',
+                'order': 'desc'
+            }
+            
+            response = requests.get(url, headers=self.headers, params=params, timeout=15)
+            
+            if response.status_code == 200:
+                media_items = response.json()
+                # Get total pages from headers for pagination
+                total_pages = int(response.headers.get('X-WP-TotalPages', 1))
+                
+                # Format the response with image data we need
+                formatted_media = []
+                for item in media_items:
+                    media_info = {
+                        'id': item['id'],
+                        'title': item['title']['rendered'],
+                        'alt_text': item['alt_text'],
+                        'caption': item['caption']['rendered'] if item['caption']['rendered'] else '',
+                        'url': item['source_url'],
+                        'thumbnail': item['media_details'].get('sizes', {}).get('thumbnail', {}).get('source_url', item['source_url']),
+                        'medium': item['media_details'].get('sizes', {}).get('medium', {}).get('source_url', item['source_url']),
+                        'date': item['date']
+                    }
+                    formatted_media.append(media_info)
+                
+                return {
+                    'media': formatted_media,
+                    'page': page,
+                    'total_pages': total_pages,
+                    'total_items': len(formatted_media)
+                }
+            else:
+                print(f"❌ Failed to get media. Status: {response.status_code}")
+                print(f"Error: {response.text}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error getting media: {str(e)}")
+            return None
+    
+    async def get_media_images_async(self, per_page: int = 50, page: int = 1) -> Optional[Dict[str, Any]]:
+        """Async version of get_media_images"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.site_url}/wp-json/wp/v2/media"
+                params = {
+                    'media_type': 'image',
+                    'per_page': per_page,
+                    'page': page,
+                    'orderby': 'date',
+                    'order': 'desc'
+                }
+                
+                async with session.get(url, headers=self.headers, params=params) as response:
+                    if response.status == 200:
+                        media_items = await response.json()
+                        total_pages = int(response.headers.get('X-WP-TotalPages', 1))
+                        
+                        # Format the response
+                        formatted_media = []
+                        for item in media_items:
+                            media_info = {
+                                'id': item['id'],
+                                'title': item['title']['rendered'],
+                                'alt_text': item['alt_text'],
+                                'caption': item['caption']['rendered'] if item['caption']['rendered'] else '',
+                                'url': item['source_url'],
+                                'thumbnail': item['media_details'].get('sizes', {}).get('thumbnail', {}).get('source_url', item['source_url']),
+                                'medium': item['media_details'].get('sizes', {}).get('medium', {}).get('source_url', item['source_url']),
+                                'date': item['date']
+                            }
+                            formatted_media.append(media_info)
+                        
+                        return {
+                            'media': formatted_media,
+                            'page': page,
+                            'total_pages': total_pages,
+                            'total_items': len(formatted_media)
+                        }
+                    else:
+                        print(f"❌ Failed to get media. Status: {response.status}")
+                        return None
+                        
+        except Exception as e:
+            print(f"❌ Error getting media: {str(e)}")
             return None

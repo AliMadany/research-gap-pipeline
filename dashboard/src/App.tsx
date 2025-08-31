@@ -34,8 +34,9 @@ import {
   IconPencil,
   IconExternalLink
 } from '@tabler/icons-react'
-import { apiService, type Article, type ResearchGap, type Stats, type WordPressPost } from './services/api'
+import { apiService, type Article, type ResearchGap, type Stats, type WordPressPost, type WordPressMedia } from './services/api'
 import { WordPressAuthModal, WordPressStatus, attemptAutoLogin } from './components/WordPressAuth'
+import { WordPressImageSelector } from './components/WordPressImageSelector'
 
 // Date formatting utilities
 const formatDate = (dateString: string) => {
@@ -115,12 +116,17 @@ function App() {
   const [deletingArticles, setDeletingArticles] = useState<Set<string>>(new Set())
   const [editingInProgress, setEditingInProgress] = useState(false)
   const [bulkOperationInProgress, setBulkOperationInProgress] = useState(false)
+  const [syncingWithWordPress, setSyncingWithWordPress] = useState(false)
+  // const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
   const [schedulingArticle, setSchedulingArticle] = useState<Article | null>(null)
   const [scheduledDate, setScheduledDate] = useState('')
   const [initialLoadComplete, setInitialLoadComplete] = useState(false)
   const [showMandatoryLogin, setShowMandatoryLogin] = useState(false)
   const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set())
   const [bulkMode, setBulkMode] = useState(false)
+  const [imageSelectModalOpen, setImageSelectModalOpen] = useState(false)
+  const [articleToPublish, setArticleToPublish] = useState<Article | null>(null)
+  const [publishScheduleDate, setPublishScheduleDate] = useState<string | undefined>()
 
   const navItems: NavItem[] = [
     { icon: IconDashboard, label: 'Overview', active: activeTab === 'overview' },
@@ -494,18 +500,31 @@ function App() {
     alert(`Batch generation complete!\n${successCount} articles generated successfully\n${errorCount} failed`)
   }
 
-  const publishArticle = async (articleId: string, scheduleDate?: string) => {
+  const openImageSelector = (article: Article, scheduleDate?: string) => {
+    setArticleToPublish(article)
+    setPublishScheduleDate(scheduleDate)
+    setImageSelectModalOpen(true)
+  }
+
+  const handleImageSelection = async (selectedImage: WordPressMedia | null) => {
+    if (!articleToPublish) return
+
     try {
-      setPublishingArticles(prev => new Set([...prev, articleId]))
-      const result = await apiService.publishArticle(articleId, scheduleDate)
+      setPublishingArticles(prev => new Set([...prev, articleToPublish.id!]))
+      
+      const result = await apiService.publishArticle(
+        articleToPublish.id!, 
+        publishScheduleDate, 
+        selectedImage?.id
+      )
       
       if (result.success) {
         // Update local state
         setArticles(articles.map(article => 
-          article.id === articleId 
+          article.id === articleToPublish.id 
             ? { 
                 ...article, 
-                status: (result.scheduled ? 'scheduled' : 'published') as const,
+                status: result.scheduled ? 'scheduled' as const : 'published' as const,
                 scheduled_date: result.scheduled_date 
               }
             : article
@@ -518,7 +537,8 @@ function App() {
         if (result.scheduled) {
           alert(`✅ Article scheduled for ${formatDate(result.scheduled_date!)}`)
         } else {
-          alert(`✅ Article published: ${result.wordpress_url}`)
+          const imageText = selectedImage ? ` with featured image "${selectedImage.title}"` : ' without featured image'
+          alert(`✅ Article published${imageText}: ${result.wordpress_url}`)
         }
         
         console.log(`Article ${result.scheduled ? 'scheduled' : 'published'}: ${result.wordpress_url}`)
@@ -529,10 +549,21 @@ function App() {
     } finally {
       setPublishingArticles(prev => {
         const newSet = new Set(prev)
-        newSet.delete(articleId)
+        newSet.delete(articleToPublish.id!)
         return newSet
       })
+      // Reset state
+      setArticleToPublish(null)
+      setPublishScheduleDate(undefined)
     }
+  }
+
+  const publishArticle = async (articleId: string, scheduleDate?: string) => {
+    const article = articles.find(a => a.id === articleId)
+    if (!article) return
+    
+    // Open image selector instead of publishing directly
+    openImageSelector(article, scheduleDate)
   }
 
   const openSchedulingModal = (article: Article) => {
@@ -676,11 +707,41 @@ function App() {
     }
   }
 
-  // Set up real-time checking for scheduled articles (every 30 seconds)
+  // Check for external changes to WordPress posts
+  const checkForExternalChanges = async () => {
+    if (!wordpressAuthenticated) return
+    
+    try {
+      setSyncingWithWordPress(true)
+      
+      // Store current article count before refresh
+      // const previousArticleCount = articles.length
+      
+      // Refresh all data to sync with WordPress
+      await loadInitialData()
+      
+      // setLastSyncTime(new Date())
+      console.log('✅ Auto-refreshed data to sync with WordPress')
+      
+      // Note: The article count comparison would happen after state updates,
+      // so we'll just log the sync for now
+    } catch (error) {
+      console.error('Failed to refresh data:', error)
+    } finally {
+      setSyncingWithWordPress(false)
+    }
+  }
+
+  // Set up real-time checking for scheduled articles and external changes
   useEffect(() => {
-    const interval = setInterval(checkScheduledArticles, 30000) // Check every 30 seconds
-    return () => clearInterval(interval)
-  }, [])
+    const scheduledInterval = setInterval(checkScheduledArticles, 30000) // Check every 30 seconds
+    const syncInterval = setInterval(checkForExternalChanges, 120000) // Check every 2 minutes
+    
+    return () => {
+      clearInterval(scheduledInterval)
+      clearInterval(syncInterval)
+    }
+  }, [wordpressAuthenticated])
 
   // Statistics calculations - use API stats when available
   const totalArticles = stats?.total_articles ?? articles.length
@@ -1146,6 +1207,8 @@ function App() {
                       style={{ whiteSpace: 'pre-line' }}
                       dangerouslySetInnerHTML={{ 
                         __html: viewingArticle.content
+                          .replace(/^## (.*$)/gm, '<h2 style="font-size: 1.5em; font-weight: 600; margin: 1.5em 0 0.5em 0; color: #212529;">$1</h2>')
+                          .replace(/^### (.*$)/gm, '<h3 style="font-size: 1.25em; font-weight: 600; margin: 1.25em 0 0.5em 0; color: #495057;">$1</h3>')
                           .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                           .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" style="color: #51cf66; text-decoration: underline;">$1</a>')
                           .replace(/• /g, '• ')
@@ -1208,6 +1271,15 @@ function App() {
                 <Group justify="space-between" mb="lg">
                   <Title order={2}>Articles</Title>
                   <Group>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={checkForExternalChanges}
+                      color="blue"
+                      loading={syncingWithWordPress}
+                    >
+                      {syncingWithWordPress ? 'Syncing...' : 'Sync with WordPress'}
+                    </Button>
                     <Button
                       variant={bulkMode ? "filled" : "outline"}
                       color="blue"
@@ -1843,6 +1915,18 @@ function App() {
         onClose={() => {}}
         onAuthenticated={handleMandatoryLoginSuccess}
         mandatory={true}
+      />
+
+      {/* WordPress Image Selector Modal */}
+      <WordPressImageSelector
+        opened={imageSelectModalOpen}
+        onClose={() => {
+          setImageSelectModalOpen(false)
+          setArticleToPublish(null)
+          setPublishScheduleDate(undefined)
+        }}
+        onImageSelect={handleImageSelection}
+        wordpressAuthenticated={wordpressAuthenticated}
       />
     </AppShell>
   )

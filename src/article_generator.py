@@ -7,12 +7,14 @@ def query_ollama(prompt):
     try:
         response = requests.post('http://localhost:11434/api/generate',
             json={
-                'model': 'deepseek-r1:1.5b',
+                'model': 'llama3.1:8b',
                 'prompt': prompt,
                 'stream': False,
                 'options': {
-                    'temperature': 0.7,
-                    'max_tokens': 2000
+                    'temperature': 0.3,
+                    'num_predict': 15000,
+                    'top_p': 0.9,
+                    'repeat_penalty': 1.1
                 }
             }
         )
@@ -35,7 +37,7 @@ def query_ollama(prompt):
         return None
 
 def clean_llm_response(response):
-    """Remove thinking process and template artifacts, return only clean article content"""
+    """Remove thinking process and formatting artifacts while preserving intended structure"""
     import re
     
     # Remove everything between <think> and </think> tags
@@ -44,25 +46,116 @@ def clean_llm_response(response):
     # Remove any remaining thinking artifacts
     cleaned = re.sub(r'</?think>', '', cleaned)
     
-    # Remove section headers with word counts (e.g., "**Project Story Opening (75-100 words)**")
-    cleaned = re.sub(r'\*\*[^*]+\(\d+-\d+\s+words?\)\*\*:?\s*\n?', '', cleaned)
+    # Remove markdown heading artifacts (### or #### etc.) but keep our intended **bold** headers
+    cleaned = re.sub(r'^#{1,6}\s*', '', cleaned, flags=re.MULTILINE)
     
-    # Remove standalone section headers (e.g., "**The Project Story**", "**Our Process**")
-    cleaned = re.sub(r'\*\*[A-Z][^*]*\*\*:?\s*\n?', '', cleaned)
+    # Remove excessive asterisks (*** or more) but keep our intended **bold** formatting
+    cleaned = re.sub(r'\*{3,}', '', cleaned)
     
-    # Remove word count indicators in parentheses
-    cleaned = re.sub(r'\(\d+-\d+\s+words?\):?\s*', '', cleaned)
+    # Remove random underscores used as separators
+    cleaned = re.sub(r'^_{3,}.*$', '', cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r'^-{3,}.*$', '', cleaned, flags=re.MULTILINE)
     
-    # Remove template instruction lines
-    cleaned = re.sub(r'Structure to follow.*?\n', '', cleaned)
-    cleaned = re.sub(r'CRITICAL REQUIREMENTS.*?\n', '', cleaned)
-    cleaned = re.sub(r'DO NOT include.*?\n', '', cleaned)
+    # Remove "Here's" or "Here is" intro phrases that AI often adds
+    cleaned = re.sub(r"^Here['']?s?\s+(the|an?)\s+", '', cleaned, flags=re.MULTILINE | re.IGNORECASE)
     
-    # Remove any remaining template artifacts
-    cleaned = re.sub(r'\[.*?\]', '', cleaned)  # Remove any remaining bracketed placeholders
+    # Remove meta comments about the article structure and requirements
+    cleaned = re.sub(r'(?i)^(this article|the article|following the template).*$', '', cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r'CRITICAL REQUIREMENTS:.*$', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'Topic:.*$', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'Service:.*$', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'City:.*$', '', cleaned, flags=re.DOTALL)
     
-    # Clean up excessive whitespace
-    cleaned = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned)
+    # Remove any stray HTML tags
+    cleaned = re.sub(r'<[^>]+>', '', cleaned)
+    
+    # Fix bullet point inconsistencies - standardize to •
+    cleaned = re.sub(r'^\s*[\-\*\+]\s+', '• ', cleaned, flags=re.MULTILINE)
+    
+    # Replace any remaining common placeholders with realistic examples
+    placeholder_replacements = {
+        r'\[Client Name?\]': 'Johnson Construction',
+        r'\[client name?\]': 'Johnson Construction', 
+        r'\[amount\]': '$15,500',
+        r'\[specific amount\]': '$12,000',
+        r'\[phone\]': '(555) 123-4567',
+        r'\[website\]': 'www.example-paving.com',
+        r'\[Street Name\]': 'Main Street',
+        r'\[Area\]': 'Downtown',
+        r'\[specific consequence\]': 'liability issues and customer complaints',
+        r'\[timeframe\]': '3 weeks',
+        r'\[specific property\]': 'commercial plaza',
+        r'\[specific property name\]': 'Metro Shopping Center',
+        r'\[specific problem\]': 'cracked and uneven surface',
+        r'\[positive outcome\]': 'smooth, professional-grade surface',
+        r'\[local conditions\]': 'harsh winter conditions',
+        r'\[local weather challenge\]': 'freeze-thaw cycles',
+        r'\[seasonal condition\]': 'winter weather',
+    }
+    
+    for pattern, replacement in placeholder_replacements.items():
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    
+    # Remove any remaining brackets that might contain placeholders, but preserve section structure
+    # Only replace brackets that appear to be placeholders (not part of section headers)
+    cleaned = re.sub(r'\[(?!.*\*\*)[^\]]*\]', 'specific details', cleaned)
+    
+    # Convert section headers to HTML for proper display
+    # First add line breaks before concatenated headers
+    header_patterns = [
+        r'([.!?])\s*(Project Story Opening)',
+        r'([.!?])\s*(The Project Story)',
+        r'([.!?])\s*(Why .* Properties Need Professional .*)',
+        r'([.!?])\s*(Our .* Process)',
+        r'([.!?])\s*(Benefits for .* Property Owners)',
+        r'([.!?])\s*(Maintenance for .* Conditions)',
+        r'([.!?])\s*(Why Choose Local .* Contractors)',
+        r'([.!?])\s*(Getting Started)'
+    ]
+    
+    # Add line breaks before headers
+    for pattern in header_patterns:
+        cleaned = re.sub(pattern, r'\1\n\n\2', cleaned, flags=re.IGNORECASE)
+    
+    # Convert headers to HTML
+    html_conversions = [
+        (r'\*\*(Project Story Opening)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(Project Story Opening)(\n|$)', r'\1<h2>\2</h2>\3'),
+        (r'\*\*(The Project Story)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(The Project Story)(\n|$)', r'\1<h2>\2</h2>\3'),
+        (r'\*\*(Why .* Properties Need Professional .*)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(Why .* Properties Need Professional .*)(\n|$)', r'\1<h2>\2</h2>\3'),
+        (r'\*\*(Our .* Process)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(Our .* Process)(\n|$)', r'\1<h2>\2</h2>\3'),
+        (r'\*\*(Benefits for .* Property Owners)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(Benefits for .* Property Owners)(\n|$)', r'\1<h2>\2</h2>\3'),
+        (r'\*\*(Maintenance for .* Conditions)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(Maintenance for .* Conditions)(\n|$)', r'\1<h2>\2</h2>\3'),
+        (r'\*\*(Why Choose Local .* Contractors)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(Why Choose Local .* Contractors)(\n|$)', r'\1<h2>\2</h2>\3'),
+        (r'\*\*(Getting Started)\*\*', r'<h2>\1</h2>'),
+        (r'(^|\n)(Getting Started)(\n|$)', r'\1<h2>\2</h2>\3')
+    ]
+    
+    # Apply HTML conversions
+    for pattern, replacement in html_conversions:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.MULTILINE | re.IGNORECASE)
+    
+    # Remove remaining ** bold formatting after header conversion
+    cleaned = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned)
+    
+    # Remove any remaining single asterisks
+    cleaned = re.sub(r'\*', '', cleaned)
+    
+    # Fix line spacing and paragraph breaks
+    # Add proper line breaks after colons (for section headers)
+    cleaned = re.sub(r':([A-Z])', r':\n\n\1', cleaned)
+    
+    # Add line breaks before section headers (capitalized words at start of line)
+    cleaned = re.sub(r'([.!?])\s*([A-Z][A-Za-z\s]+):', r'\1\n\n\2:', cleaned)
+    
+    # Clean up excessive whitespace but preserve structure
+    cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
     cleaned = re.sub(r'^\s+|\s+$', '', cleaned, flags=re.MULTILINE)
     cleaned = cleaned.strip()
     
@@ -81,55 +174,75 @@ def generate_article_from_gap(gap_topic):
         city = "your area"
     
     prompt = f"""
-    Write a professional contractor article about "{gap_topic}" following this structure, but DO NOT include any section headers, word count indicators, or template instructions in your output. Write it as a natural, flowing article that sounds like a human contractor wrote it.
+You are a professional marketing copywriter specializing in contractor websites.  
+Write a comprehensive, detailed blog article about: **{service} in {city}**.  
+The article must be EXACTLY 1500-1600 words with substantial content in each section.
+Each section must contain multiple detailed paragraphs with specific examples, numbers, and local details.
+The tone should be professional, direct, results-focused, and emphasize local expertise.  
+Do not mention word counts, brackets, or instructions in the output.  
+Do not output section labels like "(75–100 words)" or placeholders.  
+Do not use markdown (#, *, -).  
 
-    Structure to follow (but don't include these labels):
+CRITICAL: Each section below must be EXPANDED with detailed content - write 2-3 full paragraphs per section.
+Follow this structure with clear section headlines (each headline on its own line):  
 
-    1. Start with a compelling hook (75-100 words) using one of these styles:
-    - Problem/Solution Hook: "When [Client] called us last month, their [surface] was a safety hazard costing them [consequence]. Three weeks later? Completely transformed and $[amount] in added property value."
-    - Dramatic Transformation: "You wouldn't recognize the [property] on [Street] in [City]. What was once [problem] is now [positive outcome]. Here's how we did it in [timeframe]."
-    - Results Teaser: "Last month's [Area] project proves the right [service] can transform more than pavement—it transforms your entire property."
+1. Attention-Grabbing Headline  
+   - Write a compelling, results-focused headline about a recent project.  
 
-    2. Tell the project story (150-200 words) covering:
-    - The Problem: Brief description of client's specific issue
-    - Our Solution: Concise explanation of approach taken  
-    - The Results: Specific outcomes and benefits achieved
-    - Why It Worked: Brief explanation of why professional service made the difference
+2. Project Story Opening  
+   - Start with a hook: either Problem/Solution, Dramatic Transformation, or Results Teaser.  
+   - Write 1 strong paragraph.  
 
-    3. Explain why {city.title()} properties need professional {service} (100-150 words):
-    "{city.title()}'s climate challenges create unique problems for surfaces. Common issues include: [3 specific problems]. Professional {service} solves these problems with proper materials, installation techniques, and local expertise that DIY approaches can't match."
+3. The Project Story  
+   - Write 3-4 detailed paragraphs covering: The Problem, Our Solution, The Results, Why It Worked.  
+   - Include specific details: exact timelines (3-4 weeks), property values ($15,000-$25,000), safety improvements, money saved.
+   - Use realistic client names, property types, and specific locations within {city}.
 
-    4. Describe the {service} process (75-100 words):
-    Assessment, Preparation, Installation, Protection - each designed for {city}'s conditions.
+4. Why {city} Properties Need Professional {service}  
+   - Write 2-3 paragraphs explaining local climate and environmental challenges specific to {city}.  
+   - Detail 3-4 specific common issues property owners face with real examples.  
+   - Extensively explain how professional {service} solves each problem with technical details.
 
-    5. List benefits for {city.title()} property owners (100-125 words):
-    Durability, Safety, Value, Cost-Effectiveness
+5. Our {service} Process  
+   - Write 2-3 detailed paragraphs explaining Assessment, Preparation, Installation, and Protection steps.
+   - Include specific techniques, materials, and timeframes for each step.
+   - Extensively cover how each step adapts to {city}'s unique climate and soil conditions.  
 
-    6. Cover maintenance for {city.title()} conditions (75-100 words):
-    Seasonal care throughout the year
+6. Benefits for {city} Property Owners  
+   - Write a detailed paragraphs covering Durability, Safety, Value, and Cost-Effectiveness.
+   - Include specific dollar amounts, percentage improvements, and real examples.
+   - Write as natural flowing sentences with technical details, not bullet points.
 
-    7. Explain why to choose local {city.title()} contractors (75-100 words):
-    Local expertise and community investment
+7. Maintenance for {city} Conditions  
+   - Write 2 detailed paragraphs providing comprehensive seasonal care tips (Spring, Summer, Fall, Winter).
+   - Include specific maintenance schedules, products, and techniques for {city}'s climate.  
+   - Extensively explain how proper maintenance extends property life with real timelines and cost savings.
 
-    8. End with getting started section (50-75 words):
-    Call-to-action with services offered
+8. Why Choose Local {city} Contractors  
+   - Write 2-3 paragraphs highlighting climate knowledge, soil understanding, codes, suppliers, and community investment.
+   - Include specific examples of local expertise and relationships that benefit customers.
+   - Detail advantages of choosing local vs. out-of-town contractors.
 
-    CRITICAL REQUIREMENTS:
-    - DO NOT include any section headers like "**Project Story Opening**" or "**The Project Story**"
-    - DO NOT include word count indicators like "(75-100 words)"
-    - DO NOT include any template instructions or backend notes
-    - Write as one flowing article that reads naturally
-    - Replace ALL bracketed placeholders with realistic, specific details
-    - Use concrete examples and numbers (dollar amounts, timeframes, measurable results)
-    - Sound like a real contractor wrote it, not an AI
-    - Total word count: 500-750 words
-    - Focus on local conditions for {city}
+9. Getting Started  
+   - Write 1-2 paragraphs with a strong call to action encouraging immediate contact.
+   - Include specific services offered, consultation process, and guarantees.  
+   - End with: "Contact us today at [phone] or visit [website] for your free estimate." 
+   
+
+CRITICAL:  
+- Each section must begin with a clear headline (no numbers, no brackets, no labels like “(75–100 words)”).  
+- Paragraphs must flow naturally .  
+- Replace {service} and {city} naturally throughout.  
+- Final output must read like a polished website blog post with multiple sub-headlines, similar to https://www.williespaving.com/service/paving/tarmac-vs-asphalt-difference/.  
+
+
+
 
     Topic: {gap_topic}
     Service: {service}
     City: {city}
 
-    Write the complete article now:
+    Write the complete clean article now:
     """
     
     print(f"Generating article for: {gap_topic}")

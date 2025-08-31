@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Gap Pipeline</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            text-align: center;
+        }
+
+        .logo {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 20px;
+            opacity: 0;
+            animation: fadeIn 1s ease-in-out forwards;
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            opacity: 0.8;
+            margin-bottom: 30px;
+            opacity: 0;
+            animation: fadeIn 1s ease-in-out 0.5s forwards;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            opacity: 0;
+            animation: fadeIn 1s ease-in-out 1s forwards;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .loading-text {
+            font-size: 0.9em;
+            opacity: 0.8;
+        }
+
+        @keyframes fadeIn {
+            to {
+                opacity: 1;
+            }
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .status {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            font-size: 0.8em;
+            opacity: 0.6;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="logo">🔍 Research Gap Pipeline</div>
+    <div class="subtitle">AI-Powered Content Analysis</div>
+    
+    <div class="loading">
+        <div class="spinner"></div>
+        <div class="loading-text">Starting services...</div>
+    </div>
+
+    <div class="status">
+        Please wait while we initialize Ollama, DeepSeek AI, and the backend...
+    </div>
+
+    <script>
+        const messages = [
+            'Starting services...',
+            'Loading AI models...',
+            'Initializing backend...',
+            'Preparing interface...',
+            'Almost ready...'
+        ];
+
+        let currentMessage = 0;
+        const loadingText = document.querySelector('.loading-text');
+
+        setInterval(() => {
+            currentMessage = (currentMessage + 1) % messages.length;
+            loadingText.textContent = messages[currentMessage];
+        }, 2000);
+    </script>
+</body>
+</html>

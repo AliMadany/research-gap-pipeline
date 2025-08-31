@@ -48,6 +48,17 @@ export interface WordPressPost {
   word_count: number;
 }
 
+export interface WordPressMedia {
+  id: number;
+  title: string;
+  alt_text: string;
+  caption: string;
+  url: string;
+  thumbnail: string;
+  medium: string;
+  date: string;
+}
+
 class ApiService {
   private async request<T>(
     endpoint: string, 
@@ -136,7 +147,7 @@ class ApiService {
     });
   }
 
-  async publishArticle(id: string, scheduledDate?: string): Promise<{
+  async publishArticle(id: string, scheduledDate?: string, featuredImageId?: number): Promise<{
     success: boolean;
     message: string;
     wordpress_post_id?: number;
@@ -144,7 +155,9 @@ class ApiService {
     scheduled?: boolean;
     scheduled_date?: string;
   }> {
-    const body = scheduledDate ? { scheduled_date: scheduledDate } : {};
+    const body: any = {};
+    if (scheduledDate) body.scheduled_date = scheduledDate;
+    if (featuredImageId) body.featured_image_id = featuredImageId;
     
     return this.request<{
       success: boolean;
@@ -220,6 +233,21 @@ class ApiService {
       per_page: number;
       fetched_all?: boolean;
     }>(`/wordpress/posts?per_page=${perPage}&page=${page}&fetch_all=${fetchAll}`);
+  }
+
+  // WordPress Media Library
+  async getWordPressMedia(perPage: number = 50, page: number = 1): Promise<{
+    media: WordPressMedia[];
+    page: number;
+    total_pages: number;
+    total_items: number;
+  }> {
+    return this.request<{
+      media: WordPressMedia[];
+      page: number;
+      total_pages: number;
+      total_items: number;
+    }>(`/wordpress/media?per_page=${perPage}&page=${page}`);
   }
 
   // Health Check

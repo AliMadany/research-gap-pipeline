@@ -59,13 +59,14 @@ class GenerateArticleRequest(BaseModel):
 
 class PublishRequest(BaseModel):
     scheduled_date: Optional[str] = None  # ISO format datetime for scheduling
+    featured_image_id: Optional[int] = None  # WordPress media ID for featured image
 
 # Global WordPress service instance
 wordpress_service: Optional[WordPressService] = None
 
 # Database initialization
 def init_db():
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     
     # Articles table
@@ -154,7 +155,7 @@ def comprehensive_match(service: str, location: str, url: str) -> dict:
 async def load_sitemap_urls(limit: int = 10) -> List[str]:
     """Load URLs from sitemap_urls.json"""
     try:
-        with open('sitemap_urls.json', 'r', encoding='utf-8') as f:
+        with open('../sitemap_urls.json', 'r', encoding='utf-8') as f:
             urls = json.load(f)
             return urls[:limit]
     except Exception as e:
@@ -189,7 +190,7 @@ async def authenticate_wordpress(auth_request: WordPressAuthRequest):
             wordpress_service = wp_service
             
             # Store credentials in database (encrypt in production)
-            conn = sqlite3.connect('research_gap_pipeline.db')
+            conn = sqlite3.connect('../research_gap_pipeline.db')
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT OR REPLACE INTO wordpress_config 
@@ -219,7 +220,7 @@ async def logout_wordpress():
     wordpress_service = None
     
     # Clear stored credentials
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     cursor.execute('DELETE FROM wordpress_config WHERE id = 1')
     conn.commit()
@@ -231,7 +232,7 @@ async def logout_wordpress():
 @app.get("/articles", response_model=List[Article])
 async def get_articles():
     """Get all articles"""
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM articles ORDER BY created_at DESC')
     rows = cursor.fetchall()
@@ -259,7 +260,7 @@ async def create_article(article: Article):
     article.created_at = datetime.now().isoformat()
     article.word_count = len(article.content.split()) if article.content else 0
     
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO articles (id, title, content, status, created_at, word_count, generated)
@@ -276,7 +277,7 @@ async def update_article(article_id: str, article: Article):
     """Update an existing article"""
     article.word_count = len(article.content.split()) if article.content else 0
     
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     cursor.execute('''
         UPDATE articles 
@@ -292,7 +293,7 @@ async def update_article(article_id: str, article: Article):
 @app.delete("/articles/{article_id}")
 async def delete_article(article_id: str):
     """Delete an article from local database and WordPress (if published)"""
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     
     # Get article details first
@@ -355,7 +356,7 @@ async def publish_article(article_id: str, publish_request: PublishRequest = Pub
         raise HTTPException(status_code=401, detail="WordPress not authenticated")
     
     # Get article from database
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM articles WHERE id = ?', (article_id,))
     row = cursor.fetchone()
@@ -374,8 +375,12 @@ async def publish_article(article_id: str, publish_request: PublishRequest = Pub
     )
     
     try:
-        # Publish to WordPress (with optional scheduling)
-        wordpress_post = wordpress_service.publish_article_sync(article, publish_request.scheduled_date)
+        # Publish to WordPress (with optional scheduling and featured image)
+        wordpress_post = wordpress_service.publish_article_sync(
+            article, 
+            publish_request.scheduled_date, 
+            publish_request.featured_image_id
+        )
         
         if wordpress_post:
             # Update article status and WordPress post ID
@@ -426,7 +431,7 @@ async def check_scheduled_articles():
         from datetime import datetime
         
         # Get all scheduled articles
-        conn = sqlite3.connect('research_gap_pipeline.db')
+        conn = sqlite3.connect('../research_gap_pipeline.db')
         cursor = conn.cursor()
         cursor.execute('SELECT id, wordpress_post_id, scheduled_date FROM articles WHERE status = "scheduled" AND wordpress_post_id IS NOT NULL')
         scheduled_articles = cursor.fetchall()
@@ -514,7 +519,7 @@ async def analyze_research_gaps(request: AnalyzeRequest):
                 gaps.append(gap)
     
     # Store gaps in database
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     
     # Clear old gaps
@@ -542,7 +547,7 @@ async def analyze_research_gaps(request: AnalyzeRequest):
 @app.get("/research-gaps", response_model=List[ResearchGap])
 async def get_research_gaps():
     """Get all research gaps"""
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM research_gaps ORDER BY found_at DESC')
     rows = cursor.fetchall()
@@ -582,7 +587,7 @@ async def generate_article_from_research_gap(request: GenerateArticleRequest):
         )
         
         # Save to database
-        conn = sqlite3.connect('research_gap_pipeline.db')
+        conn = sqlite3.connect('../research_gap_pipeline.db')
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO articles (id, title, content, status, created_at, word_count, generated)
@@ -601,7 +606,7 @@ async def generate_article_from_research_gap(request: GenerateArticleRequest):
 @app.get("/stats")
 async def get_statistics():
     """Get application statistics"""
-    conn = sqlite3.connect('research_gap_pipeline.db')
+    conn = sqlite3.connect('../research_gap_pipeline.db')
     cursor = conn.cursor()
     
     # Count articles by status
@@ -794,7 +799,28 @@ async def get_wordpress_posts(per_page: int = 100, page: int = 1, fetch_all: boo
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching WordPress posts: {str(e)}")
 
-
+@app.get("/wordpress/media")
+async def get_wordpress_media(per_page: int = 50, page: int = 1):
+    """Get WordPress media library images"""
+    if not wordpress_service:
+        raise HTTPException(status_code=401, detail="WordPress not authenticated")
+    
+    try:
+        # Use the existing media method from WordPress service
+        media_result = wordpress_service.get_media_images(per_page, page)
+        
+        if media_result:
+            return {
+                "media": media_result['media'],
+                "page": media_result['page'], 
+                "total_pages": media_result['total_pages'],
+                "total_items": media_result['total_items']
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to fetch WordPress media")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching WordPress media: {str(e)}")
 
 
 if __name__ == "__main__":

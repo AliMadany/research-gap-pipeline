@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Startup script for Research Gap Pipeline Backend
 """
@@ -15,19 +16,19 @@ def check_requirements():
         import uvicorn
         import aiohttp
         import sqlite3
-        print("✅ All required packages are installed")
+        print("[OK] All required packages are installed")
         return True
     except ImportError as e:
-        print(f"❌ Missing required package: {e}")
+        print(f"[ERROR] Missing required package: {e}")
         print("Please run: pip install -r requirements.txt")
         return False
 
 def start_server():
     """Start the FastAPI server"""
-    print("🚀 Starting Research Gap Pipeline Backend...")
-    print("📍 API will be available at: http://localhost:8000")
-    print("📖 API Documentation: http://localhost:8000/docs")
-    print("🔄 Server will reload automatically on code changes")
+    print("[INFO] Starting Research Gap Pipeline Backend...")
+    print("[INFO] API will be available at: http://localhost:8000")
+    print("[INFO] API Documentation: http://localhost:8000/docs")
+    print("[INFO] Server will reload automatically on code changes")
     print("\n" + "="*50 + "\n")
     
     # Change to src directory and start server
@@ -41,9 +42,9 @@ def start_server():
             "--reload"
         ])
     except KeyboardInterrupt:
-        print("\n👋 Server stopped by user")
+        print("\n[INFO] Server stopped by user")
     except Exception as e:
-        print(f"❌ Error starting server: {e}")
+        print(f"[ERROR] Error starting server: {e}")
 
 if __name__ == "__main__":
     print("Research Gap Pipeline - Backend Startup")
@@ -51,7 +52,7 @@ if __name__ == "__main__":
     
     # Check if we're in the right directory
     if not Path("src/api.py").exists():
-        print("❌ Please run this script from the project root directory")
+        print("[ERROR] Please run this script from the project root directory")
         sys.exit(1)
     
     # Check requirements

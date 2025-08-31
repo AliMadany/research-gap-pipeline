@@ -1,0 +1,48 @@
+{
+  "name": "research-gap-pipeline-desktop",
+  "version": "1.0.0",
+  "description": "Research Gap Pipeline Desktop Application",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build-win": "electron-builder --win",
+    "dist": "npm run build-react && electron-builder",
+    "build-react": "cd ../dashboard && npm run build"
+  },
+  "author": "Research Gap Pipeline",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "extract-zip": "^2.0.1"
+  },
+  "build": {
+    "appId": "com.researchgap.pipeline",
+    "productName": "Research Gap Pipeline",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "splash.html",
+      "renderer/**/*",
+      "resources/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "win": {
+      "target": "dir",
+      "signingHashAlgorithms": []
+    },
+    "npmRebuild": false
+  }
+}

@@ -4,7 +4,18 @@
       "Bash(npm run build:*)",
       "Bash(npm run dev:*)",
       "Bash(copy sitemap_urls.json srcsitemap_urls.json)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(mkdir:*)",
+      "Bash(find:*)",
+      "Bash(node:*)",
+      "Bash(npm start)",
+      "Bash(curl:*)",
+      "Bash(rm:*)",
+      "Bash(npx electron-builder:*)",
+      "Bash(set CSC_IDENTITY_AUTO_DISCOVERY=false)",
+      "Bash(python:*)",
+      "Bash(timeout:*)",
+      "Bash(where:*)"
     ],
     "deny": []
   }

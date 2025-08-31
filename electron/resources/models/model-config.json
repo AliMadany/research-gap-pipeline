@@ -1,0 +1,6 @@
+{
+  "name": "deepseek-r1:1.5b",
+  "needsDownload": true,
+  "size": "2.8GB",
+  "description": "DeepSeek R1 1.5B parameter model for reasoning"
+}

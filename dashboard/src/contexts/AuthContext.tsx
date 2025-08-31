@@ -1,5 +1,13 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { apiService, type WordPressUser } from '../services/api';
+import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { apiService } from '../services/api';
+
+// Define WordPressUser type locally since it's not exported from api
+type WordPressUser = {
+  id: number;
+  username: string;
+  email: string;
+  name: string;
+};
 
 interface AuthContextType {
   user: WordPressUser | null;
@@ -68,10 +76,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Always verify with the backend
       const authStatus = await apiService.getWordPressAuthStatus();
       
-      if (authStatus.authenticated && authStatus.user) {
-        // Update with fresh user data from backend
-        setUser(authStatus.user);
-        localStorage.setItem('wordpress_user', JSON.stringify(authStatus.user));
+      if (authStatus.authenticated) {
+        // For now, create a basic user object since backend doesn't return user details
+        const basicUser: WordPressUser = {
+          id: 1,
+          username: 'wordpress_user',
+          email: 'user@wordpress.com',
+          name: 'WordPress User'
+        };
+        setUser(basicUser);
+        localStorage.setItem('wordpress_user', JSON.stringify(basicUser));
         localStorage.setItem('wordpress_authenticated', 'true');
       } else {
         // Backend says we're not authenticated, clear local storage
