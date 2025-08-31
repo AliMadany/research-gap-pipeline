@@ -54,10 +54,7 @@ brew install ollama
 # Or download from https://ollama.com/download
 ```
 
-**Linux:**
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
+
 
 ### Step 2: Install AI Models
 
@@ -87,7 +84,7 @@ cd research-gap-pipeline
 pip install -r requirements.txt
 ```
 
-### Step 5: Install Dashboard Dependencies (Optional)
+### Step 5: Install Dashboard Dependencies 
 
 If using the web dashboard:
 
@@ -96,25 +93,9 @@ cd dashboard
 npm install
 ```
 
-## Running the Application
 
-### Method 1: Backend Only (API)
 
-1. **Start Ollama server:**
-   ```cmd
-   ollama serve
-   ```
-
-2. **Start the backend API:**
-   ```cmd
-   python start-backend.py
-   ```
-
-3. **Access the API:**
-   - API runs on: `http://localhost:8000`
-   - API docs: `http://localhost:8000/docs`
-
-### Method 2: Full Application with Dashboard
+### Method 1: Full Application with Dashboard
 
 1. **Start Ollama server:**
    ```cmd
@@ -136,19 +117,7 @@ npm install
    - Dashboard: `http://localhost:3000`
    - Backend API: `http://localhost:8000`
 
-### Method 3: Desktop Application
 
-1. **Start Ollama server:**
-   ```cmd
-   ollama serve
-   ```
-
-2. **Build and run desktop app:**
-   ```cmd
-   cd electron
-   npm install
-   npm start
-   ```
 
 ## API Endpoints
 
